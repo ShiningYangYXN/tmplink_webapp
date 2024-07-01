@@ -90,6 +90,7 @@ class tmplink {
         this.profile = new profile;
         this.buy = new buy;
         this.notes = new notes;
+        this.oauth = new oauth;
 
         this.stream.init(this);
         this.giftcard.init(this);
@@ -100,6 +101,7 @@ class tmplink {
         this.profile.init(this);
         this.buy.init(this);
         this.notes.init(this);
+        this.oauth.init(this);
 
         //
         $('.workspace-navbar').hide();
@@ -437,6 +439,8 @@ class tmplink {
             });
             //初始化用户个性化信息
             this.profile.init_details();
+            //初始化账号互联状态
+            this.oauth.init_details();
         });
     }
 
@@ -3075,6 +3079,10 @@ class tmplink {
                         $('#submit').removeAttr('disabled');
                     }
                 });
+            }else{
+                $('#msg_notice').html(app.languageData.login_fail);
+                $('#submit').html(app.languageData.form_btn_login);
+                $('#submit').removeAttr('disabled');
             }
         });
     }
@@ -3135,6 +3143,7 @@ class tmplink {
         var email = $('#email_new').val();
         var password = $('#password').val();
         var rpassword = $('#rpassword').val();
+        var lang = this.currentLanguage;
         var code = $('#checkcode').val();
         $('#msg_notice').show();
         $('#msg_notice').html(app.languageData.form_btn_processing);
@@ -3148,6 +3157,7 @@ class tmplink {
                 password: password,
                 captcha: recaptcha,
                 rpassword: rpassword,
+                lang: lang,
                 code: code
             }, (rsp) => {
                 if (rsp.status === 1) {
