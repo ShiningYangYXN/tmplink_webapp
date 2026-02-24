@@ -1115,7 +1115,6 @@ body.vx-fl-has-sponsor .vx-content {
     color: var(--vx-primary);
     background: var(--vx-primary-light);
     border-radius: 6px;
-    margin-left: 8px;
     white-space: nowrap;
 }
 
