@@ -24,21 +24,43 @@ body.file-page.auth-page {
 
 .auth-info-panel {
     flex: 0 0 38%;
-    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
     border-right: 1px solid var(--file-border);
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    gap: 20px;
     position: relative;
+    overflow: hidden;
+    padding: 0;
 }
 
-.auth-hero {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 10px;
-    padding: 16px;
+.auth-panel-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center;
+    display: block;
+}
+
+.auth-panel-img-dark {
+    display: none;
+}
+
+body.dark-mode .auth-panel-img-light,
+body.dark-mode .auth-panel-img-dark ~ .auth-panel-img-light {
+    display: none;
+}
+
+body.dark-mode .auth-panel-img-dark {
+    display: block;
+}
+
+@media (prefers-color-scheme: dark) {
+    body:not(.dark-mode) .auth-panel-img-light {
+        display: none;
+    }
+
+    body:not(.dark-mode) .auth-panel-img-dark {
+        display: block;
+    }
 }
 
 .auth-logo {
@@ -336,9 +358,7 @@ body.file-page.auth-page {
     }
 
     .auth-info-panel {
-        border-right: none;
-        border-bottom: 1px solid var(--file-border);
-        padding: 24px;
+        display: none;
     }
 
     .auth-form-panel {
