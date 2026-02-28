@@ -8,11 +8,15 @@
         <div class="vx-nav-title" data-tpl="navbar_buy">商店</div>
         <a href="javascript:;" class="vx-nav-item active" id="nav-shop-products" onclick="VX_SHOP.showTab('products')">
             <iconpark-icon name="bag-shopping"></iconpark-icon>
-            <span class="vx-nav-item-text" data-tpl="navbar_buy">商店</span>
+            <span class="vx-nav-item-text" data-tpl="vx_shop_products_tab">购买</span>
         </a>
         <a href="javascript:;" class="vx-nav-item" id="nav-shop-purchased" onclick="VX_SHOP.showTab('purchased')">
             <iconpark-icon name="list-check"></iconpark-icon>
             <span class="vx-nav-item-text" data-tpl="navbar_hr_shop">已购</span>
+        </a>
+        <a href="javascript:;" class="vx-nav-item" id="nav-shop-points" onclick="VX_SHOP.showTab('points')">
+            <iconpark-icon name="funds"></iconpark-icon>
+            <span class="vx-nav-item-text">点数</span>
         </a>
         <a href="javascript:;" class="vx-nav-item" onclick="VX_SHOP.redeemGiftCard()">
             <iconpark-icon name="gift-card"></iconpark-icon>
@@ -139,6 +143,38 @@
             </div>
         </div>
     </div>
+
+    <!-- Points Tab -->
+    <div class="vx-shop-tab-content" id="vx-shop-points" style="display: none;">
+        <!-- 点数操作区 -->
+        <div class="vx-shop-section">
+            <div class="vx-point-actions">
+                <div class="vx-point-action-card" onclick="VX_SHOP.openPointRecharge()">
+                    <div class="vx-point-action-icon vx-point-icon-charge">
+                        <iconpark-icon name="paper-money-two"></iconpark-icon>
+                    </div>
+                    <div class="vx-point-action-label">充值点数</div>
+                </div>
+                <div class="vx-point-action-card" onclick="VX_SHOP.openPointTransfer()">
+                    <div class="vx-point-action-icon vx-point-icon-transfer">
+                        <iconpark-icon name="expenses"></iconpark-icon>
+                    </div>
+                    <div class="vx-point-action-label">点数转账</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 点数变动历史 -->
+        <div class="vx-shop-section">
+            <div class="vx-shop-section-title">变动厂履</div>
+            <div id="vx-point-log-list">
+                <div class="vx-orders-loading">
+                    <div class="vx-spinner"></div>
+                    <span>加载中...</span>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- Purchase Modal -->
@@ -170,6 +206,258 @@
 
 <style>
 /* Shop Module Styles */
+
+/* Point payment icon */
+.vx-pay-point {
+    background: linear-gradient(135deg, #16a34a, #15803d);
+}
+.vx-pay-point iconpark-icon {
+    font-size: 18px;
+    color: #fff;
+}
+
+/* File price tag in file list */
+.vx-price-tag iconpark-icon {
+    font-size: 11px;
+}
+
+.vx-unpurchased-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+    margin-left: 4px;
+    vertical-align: middle;
+}
+
+/* Points Tab Styles */
+.vx-point-actions {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.vx-point-action-card {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 20px;
+    background: var(--vx-surface);
+    border: 1px solid var(--vx-border);
+    border-radius: var(--vx-radius-lg);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.vx-point-action-card:hover {
+    border-color: var(--vx-primary);
+    box-shadow: var(--vx-shadow-md);
+    transform: translateY(-2px);
+}
+
+.vx-point-action-icon {
+    width: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--vx-radius-md);
+    flex-shrink: 0;
+}
+
+.vx-point-action-icon iconpark-icon {
+    font-size: 24px;
+    color: white;
+}
+
+.vx-point-icon-charge {
+    background: linear-gradient(135deg, #fb923c, #f59e0b);
+}
+
+.vx-point-icon-transfer {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+}
+
+.vx-point-action-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--vx-text);
+}
+
+/* Point Log Items */
+.vx-point-log-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--vx-border);
+}
+
+.vx-point-log-item:last-child {
+    border-bottom: none;
+}
+
+.vx-point-log-icon {
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 20px;
+}
+
+.vx-point-income iconpark-icon {
+    color: #22c55e;
+}
+
+.vx-point-expense iconpark-icon {
+    color: #ef4444;
+}
+
+.vx-point-log-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.vx-point-log-action {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--vx-text);
+    margin-bottom: 2px;
+}
+
+.vx-point-log-content {
+    font-size: 13px;
+    color: var(--vx-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+}
+
+.vx-point-log-time {
+    font-size: 12px;
+    color: var(--vx-text-muted);
+    margin-top: 2px;
+}
+
+.vx-point-log-amount {
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.vx-point-income {
+    font-size: 16px;
+    font-weight: 700;
+    color: #22c55e;
+}
+
+.vx-point-expense {
+    font-size: 16px;
+    font-weight: 700;
+    color: #ef4444;
+}
+
+.vx-point-log-balance {
+    font-size: 12px;
+    color: var(--vx-text-muted);
+    margin-top: 2px;
+}
+
+.vx-point-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 16px 0;
+    font-size: 14px;
+    color: var(--vx-text-secondary);
+}
+
+/* Recharge Presets */
+.vx-recharge-presets {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-top: 8px;
+    margin-bottom: 16px;
+}
+
+.vx-recharge-preset {
+    padding: 10px 6px;
+    background: var(--vx-bg-secondary);
+    border: 2px solid transparent;
+    border-radius: var(--vx-radius-md);
+    cursor: pointer;
+    text-align: center;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--vx-text);
+    transition: all 0.2s ease;
+    line-height: 1.4;
+}
+
+.vx-recharge-preset:hover,
+.vx-recharge-preset-active {
+    border-color: var(--vx-primary);
+    background: rgba(var(--vx-primary-rgb), 0.08);
+    color: var(--vx-primary);
+}
+
+.vx-recharge-preset-points {
+    display: block;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--vx-text-muted);
+    margin-top: 2px;
+}
+
+.vx-recharge-preset-active .vx-recharge-preset-points {
+    color: var(--vx-primary);
+    opacity: 0.8;
+}
+
+/* Custom Amount Input */
+.vx-recharge-custom {
+    border-top: 1px solid var(--vx-border);
+    padding-top: 16px;
+}
+
+.vx-recharge-custom-label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--vx-text-muted);
+    margin-bottom: 8px;
+}
+
+.vx-recharge-input-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.vx-recharge-currency {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--vx-text);
+    min-width: 16px;
+}
+
+.vx-recharge-preview {
+    margin-top: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--vx-primary);
+    min-height: 22px;
+    transition: color 0.2s;
+}
 
 .vx-header-shop {
     position: sticky;

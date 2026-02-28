@@ -49,6 +49,7 @@ class tmplink_api {
     sponsor = false;
     sponsor_time = null;
     user_acv = 0;
+    user_point = 0;
     user_join = null;
     user_total_files = 0;
     user_total_filesize = '0 GB';
@@ -380,6 +381,7 @@ class tmplink_api {
                 this.sponsor = rsp.data.sponsor;
                 this.sponsor_time = rsp.data.sponsor_time;
                 this.user_acv = rsp.data.acv;
+                this.user_point = (typeof rsp.data.point !== 'undefined') ? rsp.data.point : 0;
                 this.user_group = rsp.data.group;
                 this.user_join = rsp.data.join;
                 this.user_total_files = rsp.data.total_files;
