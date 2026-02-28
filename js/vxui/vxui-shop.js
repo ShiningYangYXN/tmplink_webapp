@@ -486,6 +486,7 @@ window.VX_SHOP = {
                 <li>${this.t('sponsor_right_5', '在线点播任意视频')}</li>
                 <li>${this.t('sponsor_right_6', '优先认证')}</li>
                 <li>${this.t('sponsor_right_7', '更多的智能小薇对话机会')}</li>
+                <li>${this.t('sponsor_right_8', '摆摊：出售您的文件')}</li>
             </ul>
             
             <h4 class="vx-section-title">${this.t('payment_duration', '选择时长')}</h4>
