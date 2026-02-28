@@ -3376,7 +3376,7 @@ var VX_FILELIST = VX_FILELIST || {
                 <div class="vx-modal-header">
                     <h3 class="vx-modal-title">
                         <iconpark-icon name="funds"></iconpark-icon>
-                        ${this.t('vx_sell_file', '\u51fa\u552e')} · <span style="font-weight:400;font-size:14px;opacity:.7;">${this.escapeHtml(fname)}</span>
+                        ${currentPrice ? this.t('vx_update_price', '调整价格') : this.t('vx_sell_file', '出售')} · <span style="font-weight:400;font-size:14px;opacity:.7;">${this.escapeHtml(fname)}</span>
                     </h3>
                     <button class="vx-modal-close" onclick="VX_FILELIST.closeSetPriceModal()">
                         <iconpark-icon name="circle-xmark"></iconpark-icon>
@@ -3477,7 +3477,13 @@ var VX_FILELIST = VX_FILELIST || {
             if (rsp && rsp.status === 1) {
                 this.closeSetPriceModal();
                 if (typeof VXUI !== 'undefined') VXUI.toastSuccess(this.t('vx_price_set_success', '售价设定成功'));
-                this.refresh();
+                // 原地更新本地数据和 DOM，无需整页刷新
+                const fileToUpdate = (this.fileList || []).find(f => String(f.ukey) === String(ukey));
+                if (fileToUpdate) {
+                    fileToUpdate.for_sale = true;
+                    fileToUpdate.price = price;
+                }
+                this._patchFileRow(ukey);
             } else {
                 const msg = (rsp && rsp.data && rsp.data.message) || this.t('vx_update_failed', '修改失败');
                 if (typeof VXUI !== 'undefined') VXUI.toastError(msg);
@@ -3505,7 +3511,14 @@ var VX_FILELIST = VX_FILELIST || {
 
         const confirmed = await new Promise(resolve => {
             if (typeof VXUI !== 'undefined' && typeof VXUI.confirm === 'function') {
-                VXUI.confirm(this.t('vx_remove_price_confirm', '确定要取消此文件的售价吗？这将使文件恢复免费下载。'), resolve);
+                VXUI.confirm({
+                    title: this.t('vx_title_confirm', '确认'),
+                    message: this.t('vx_remove_price_confirm', '确定要取消此文件的售价吗？这将使文件恢复免费下载。'),
+                    confirmText: this.t('btn_confirm', '确认'),
+                    confirmClass: 'vx-btn-danger',
+                    onConfirm: () => resolve(true),
+                    onCancel: () => resolve(false)
+                });
             } else {
                 resolve(window.confirm(this.t('vx_remove_price_confirm', '确定要取消此文件的售价吗？这将使文件恢复免费下载。')));
             }
@@ -3528,7 +3541,13 @@ var VX_FILELIST = VX_FILELIST || {
 
             if (rsp && rsp.status === 1) {
                 if (typeof VXUI !== 'undefined') VXUI.toastSuccess(this.t('vx_price_removed', '已取消售价'));
-                this.refresh();
+                // 原地更新本地数据和 DOM，无需整页刷新
+                const fileToUpdate = (this.fileList || []).find(f => String(f.ukey) === String(ukey));
+                if (fileToUpdate) {
+                    fileToUpdate.for_sale = false;
+                    fileToUpdate.price = 0;
+                }
+                this._patchFileRow(ukey);
             } else {
                 const msg = (rsp && rsp.data && rsp.data.message) || this.t('vx_update_failed', '操作失败');
                 if (typeof VXUI !== 'undefined') VXUI.toastError(msg);
@@ -3539,6 +3558,60 @@ var VX_FILELIST = VX_FILELIST || {
         }
     },
     
+    /**
+     * 局部更新指定文件行的 DOM（价格标签 + 有效期标签），避免整页刷新。
+     * 调用前需先更新 this.fileList 中对应文件的数据。
+     */
+    _patchFileRow(ukey) {
+        const file = (this.fileList || []).find(f => String(f.ukey) === String(ukey));
+        if (!file) return;
+
+        const row = document.querySelector(`.vx-list-row[data-ukey="${ukey}"]`);
+        if (!row) return;
+
+        const filenameDiv = row.querySelector('.vx-list-filename');
+        if (!filenameDiv) return;
+
+        // --- 更新售价标签 ---
+        const existingPriceTag = filenameDiv.querySelector('.vx-price-tag');
+        if (file.for_sale && file.price > 0) {
+            const newTagHtml = `<span class="vx-price-tag" title="${this.t('vx_file_for_sale', '付费文件')}: ${file.price} ${this.t('vx_points', '点数')}"><iconpark-icon name="funds"></iconpark-icon>${file.price}</span>`;
+            if (existingPriceTag) {
+                existingPriceTag.outerHTML = newTagHtml;
+            } else {
+                const tmp = document.createElement('span');
+                tmp.innerHTML = newTagHtml;
+                const lefttimeEl = filenameDiv.querySelector('.vx-lefttime');
+                if (lefttimeEl) {
+                    filenameDiv.insertBefore(tmp.firstElementChild, lefttimeEl);
+                } else {
+                    filenameDiv.appendChild(tmp.firstElementChild);
+                }
+            }
+        } else {
+            if (existingPriceTag) existingPriceTag.remove();
+        }
+
+        // --- 更新有效期标签 ---
+        const isPermanent = Number(file.model) === 99;
+        const existingLefttime = filenameDiv.querySelector('.vx-lefttime');
+        if (file.lefttime > 0 && !isPermanent) {
+            const lefttimeId = `lefttime_${file.ukey}`;
+            const newLefttimeHtml = `<span class="vx-lefttime" data-tmplink-lefttime="${file.lefttime}"><iconpark-icon name="clock"></iconpark-icon><span id="${lefttimeId}">--</span></span>`;
+            if (existingLefttime) {
+                existingLefttime.outerHTML = newLefttimeHtml;
+            } else {
+                const tmp = document.createElement('span');
+                tmp.innerHTML = newLefttimeHtml;
+                filenameDiv.appendChild(tmp.firstElementChild);
+            }
+            // 重新启动倒计时
+            this.initLeftTimeCountdown();
+        } else {
+            if (existingLefttime) existingLefttime.remove();
+        }
+    },
+
     /**
      * 确保下载器已初始化
      */
@@ -5213,7 +5286,15 @@ var VX_FILELIST = VX_FILELIST || {
         const fileForSale = file && file.for_sale;
         if (elPriceDivider) elPriceDivider.style.display = canManagePrice ? '' : 'none';
         if (elPriceLabel) elPriceLabel.style.display = canManagePrice ? '' : 'none';
-        if (elSetPrice) elSetPrice.style.display = canManagePrice ? '' : 'none';
+        if (elSetPrice) {
+            elSetPrice.style.display = canManagePrice ? '' : 'none';
+            const setPriceSpan = elSetPrice.querySelector('span');
+            if (setPriceSpan) {
+                setPriceSpan.textContent = fileForSale
+                    ? this.t('vx_update_price', '调整价格')
+                    : this.t('vx_sell_file', '出售');
+            }
+        }
         if (elRemovePrice) elRemovePrice.style.display = (canManagePrice && fileForSale) ? '' : 'none';
     },
 
@@ -5309,6 +5390,9 @@ var VX_FILELIST = VX_FILELIST || {
             ? TL.api_file
             : ((typeof TL !== 'undefined' && TL.api_url) ? (TL.api_url + '/file') : '/api_v2/file');
 
+        // model → 新 lefttime（Unix 秒）的估算：0=24h, 1=3d, 2=7d, 99=永久
+        const modelDuration = { 0: 86400, 1: 259200, 2: 604800, 99: 0 };
+
         $.post(apiUrl, {
             action: 'change_model',
             token: token,
@@ -5317,7 +5401,13 @@ var VX_FILELIST = VX_FILELIST || {
         }, (rsp) => {
             if (rsp && rsp.status === 1) {
                 VXUI.toastSuccess(this.t('vx_update_success', '修改成功'));
-                this.refresh();
+                // 原地更新本地数据和 DOM，无需整页刷新
+                const fileToUpdate = (this.fileList || []).find(f => String(f.ukey) === String(ukey));
+                if (fileToUpdate) {
+                    fileToUpdate.model = model;
+                    fileToUpdate.lefttime = modelDuration[model] || 0;
+                }
+                this._patchFileRow(ukey);
                 return;
             }
             // 处理不同的错误状态
