@@ -159,9 +159,9 @@ class profile {
 
         //如果是赞助者，需要标记已启用高速通道和蓝标
         if(this.parent_op.sponsor){
-            $('.user_group_highspeed').html(app.languageData.opt_enable+ `(${app.languageData.service_code_hs})`);
+            $('.user_group_highspeed').html(app.languageData.opt_enable);
             $('.user_group_highspeed').addClass('text-green');
-            $('.user_group_blue').html(app.languageData.opt_enable + `(${app.languageData.service_code_hs})`);
+            $('.user_group_blue').html(app.languageData.opt_enable);
             $('.user_group_blue').addClass('text-green');
         }
     }

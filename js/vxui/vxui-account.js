@@ -404,16 +404,19 @@ const VX_ACCOUNT = {
             const highspeedEl = document.getElementById('vx-stat-highspeed');
             const blueEl = document.getElementById('vx-stat-blue');
             const dvdEl = document.getElementById('vx-stat-dvd');
+            const filesellEl = document.getElementById('vx-stat-filesell');
             
             // If sponsor, all features are enabled
             if (TL.sponsor) {
-                if (highspeedEl) highspeedEl.innerHTML = formatStatus(true, sponsorText);
-                if (blueEl) blueEl.innerHTML = formatStatus(true, sponsorText);
+                if (highspeedEl) highspeedEl.innerHTML = formatStatus(true);
+                if (blueEl) blueEl.innerHTML = formatStatus(true);
                 if (dvdEl) dvdEl.innerHTML = formatStatus(true);
+                if (filesellEl) filesellEl.innerHTML = formatStatus(true);
             } else {
                 if (highspeedEl) highspeedEl.innerHTML = formatStatus(hasHighSpeed);
                 if (blueEl) blueEl.innerHTML = formatStatus(hasBlue);
                 if (dvdEl) dvdEl.innerHTML = formatStatus(false);
+                if (filesellEl) filesellEl.innerHTML = formatStatus(false);
             }
             
             // ACV (Share Value / 分享值)
@@ -456,6 +459,13 @@ const VX_ACCOUNT = {
                     sponsorTimeEl.textContent = this.lang('opt_disable', '未启用');
                 }
             }
+
+            // Points balance (async fetch)
+            const pointsEl = document.getElementById('vx-stat-points');
+            if (pointsEl) {
+                pointsEl.textContent = '...';
+                this.fetchPointBalance(pointsEl);
+            }
             
             // Show publish section for sponsors or users with high share value
             const publishSection = document.getElementById('vx-profile-publish');
@@ -486,7 +496,35 @@ const VX_ACCOUNT = {
             if (contentEl) contentEl.style.display = 'block';
         }
     },
-    
+
+    /**
+     * Fetch current point balance and update the target element
+     */
+    async fetchPointBalance(targetEl) {
+        try {
+            const apiUrl = (typeof TL !== 'undefined' && TL.api_pay) ? TL.api_pay : '/api_v2/pay';
+            const token = (typeof TL !== 'undefined' && TL.api_token) ? TL.api_token : '';
+            if (!token) {
+                if (targetEl) targetEl.textContent = '--';
+                return;
+            }
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `action=point_log&token=${encodeURIComponent(token)}&page=0`
+            });
+            const rsp = await response.json();
+            if (rsp.status === 1 && Array.isArray(rsp.data) && rsp.data.length > 0) {
+                if (targetEl) targetEl.textContent = rsp.data[0].now;
+            } else {
+                if (targetEl) targetEl.textContent = '0';
+            }
+        } catch (e) {
+            console.warn('[VX_ACCOUNT] Failed to fetch point balance:', e);
+            if (targetEl) targetEl.textContent = '--';
+        }
+    },
+
     /**
      * Show profile edit form
      */
