@@ -8,6 +8,14 @@ body.file-page.auth-page {
     background: var(--file-bg);
 }
 
+/* Make #auth-view stretch to fill available space (mirrors .file-page-root) */
+#auth-view {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    background: var(--file-bg);
+}
+
 /* Main auth container aligned with file layout */
 .auth-content {
     background: var(--file-card-bg);
@@ -67,7 +75,7 @@ body.dark-mode .auth-panel-img-dark {
     width: 72px;
     height: 72px;
     border-radius: 20px;
-    background: #ffffff;
+    background: var(--file-card-bg);
     box-shadow: 0 20px 40px rgba(99, 102, 241, 0.12);
     display: flex;
     align-items: center;
@@ -96,7 +104,7 @@ body.dark-mode .auth-panel-img-dark {
 
 .auth-form-panel {
     flex: 1;
-    background: #ffffff;
+    background: var(--file-card-bg);
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -132,7 +140,7 @@ body.dark-mode .auth-panel-img-dark {
     height: 48px;
     border-radius: 12px;
     border: 1px solid var(--file-border);
-    background: #f8fafc;
+    background: var(--file-sidebar-bg);
     font-size: 15px;
     padding: 0 14px;
     color: var(--file-text-main);
@@ -142,7 +150,7 @@ body.dark-mode .auth-panel-img-dark {
 
 .auth-input:focus {
     border-color: var(--file-accent);
-    background: #ffffff;
+    background: var(--file-card-bg);
     box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
 }
 
@@ -161,7 +169,7 @@ body.dark-mode .auth-panel-img-dark {
     padding: 0 16px;
     border-radius: 12px;
     border: 1px solid var(--file-border);
-    background: #ffffff;
+    background: var(--file-card-bg);
     color: var(--file-text-main);
     font-weight: 600;
     cursor: pointer;
@@ -194,13 +202,13 @@ body.dark-mode .auth-panel-img-dark {
 }
 
 .auth-btn-secondary {
-    background: #ffffff;
+    background: var(--file-card-bg);
     border: 1px solid var(--file-border);
     color: var(--file-text-main);
 }
 
 .auth-btn-google {
-    background: #ffffff;
+    background: var(--file-card-bg);
     border: 1px solid var(--file-border);
     color: var(--file-text-main);
 }
@@ -292,7 +300,7 @@ body.dark-mode .auth-panel-img-dark {
 .auth-modal-dialog {
     width: 100%;
     max-width: 520px;
-    background: #ffffff;
+    background: var(--file-card-bg);
     border-radius: 16px;
     box-shadow: var(--file-shadow);
     overflow: hidden;
@@ -343,7 +351,7 @@ body.dark-mode .auth-panel-img-dark {
 .auth-modal-btn {
     border-radius: 10px;
     border: 1px solid var(--file-border);
-    background: #ffffff;
+    background: var(--file-card-bg);
     color: var(--file-text-main);
     font-size: 14px;
     padding: 8px 16px;
