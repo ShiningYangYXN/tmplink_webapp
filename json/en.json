@@ -583,6 +583,9 @@
     "model_profile_title": "Preferences",
     "model_profile_bulk_copy": "Do you want to enable continuous copying? After enabling you can click the copy button continuously to copy multiple file links.",
     "model_profile_confirm_delete": "Do you want to enable confirm again before deleting?",
+    "reset_sort": "Reset all folder sorting",
+    "reset": "Reset",
+    "reset_sort_desc": "Clear all browser-side recorded folder sort preferences.",
     "navbar_profile": "Preferences",
     "confirm_delete": "Are you sure you want to delete?",
     "need_login_of_file": "Log in to bookmarked files",
@@ -1210,5 +1213,14 @@
     "vx_orders_loading": "Loading orders...",
     "vx_orders_empty": "No purchased items",
     "vx_direct_not_configured_msg": "Unable to enable folder direct link because your account has not configured the direct link feature yet.",
-    "vx_operation_error": "An operation error occurred, please try again later."
+    "vx_operation_error": "An operation error occurred, please try again later.",
+    "vx_points_tab": "Points",
+    "vx_loading": "Loading...",
+    "vx_point_recharge_action": "Recharge points",
+    "vx_point_transfer_action": "Transfer points",
+    "vx_point_log_title": "Point history",
+    "vx_fl_menu_set_price": "Set price",
+    "vx_fl_menu_remove_price": "Remove price",
+    "vx_lang_label": "Language",
+    "vx_community_link": "Community"
 }

@@ -16,7 +16,7 @@
         </a>
         <a href="javascript:;" class="vx-nav-item" id="nav-shop-points" onclick="VX_SHOP.showTab('points')">
             <iconpark-icon name="funds"></iconpark-icon>
-            <span class="vx-nav-item-text">点数</span>
+            <span class="vx-nav-item-text" data-tpl="vx_points_tab">点数</span>
         </a>
         <a href="javascript:;" class="vx-nav-item" onclick="VX_SHOP.redeemGiftCard()">
             <iconpark-icon name="gift-card"></iconpark-icon>
@@ -153,24 +153,24 @@
                     <div class="vx-point-action-icon vx-point-icon-charge">
                         <iconpark-icon name="paper-money-two"></iconpark-icon>
                     </div>
-                    <div class="vx-point-action-label">充值点数</div>
+                    <div class="vx-point-action-label" data-tpl="vx_point_recharge_action">充值点数</div>
                 </div>
                 <div class="vx-point-action-card" onclick="VX_SHOP.openPointTransfer()">
                     <div class="vx-point-action-icon vx-point-icon-transfer">
                         <iconpark-icon name="expenses"></iconpark-icon>
                     </div>
-                    <div class="vx-point-action-label">点数转账</div>
+                    <div class="vx-point-action-label" data-tpl="vx_point_transfer_action">点数转账</div>
                 </div>
             </div>
         </div>
 
         <!-- 点数变动历史 -->
         <div class="vx-shop-section">
-            <div class="vx-shop-section-title">变动厂履</div>
+            <div class="vx-shop-section-title" data-tpl="vx_point_log_title">变动记录</div>
             <div id="vx-point-log-list">
                 <div class="vx-orders-loading">
                     <div class="vx-spinner"></div>
-                    <span>加载中...</span>
+                    <span data-tpl="vx_loading">加载中...</span>
                 </div>
             </div>
         </div>

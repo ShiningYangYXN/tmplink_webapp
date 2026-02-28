@@ -257,6 +257,9 @@
     "model_profile_title": "偏好设定",
     "model_profile_confirm_delete": "是否启用删除前确认？",
     "model_profile_bulk_copy": "是否启用连续复制？启用后您可以连续点击复制按钮以复制多个文件链接。",
+    "reset_sort": "重置所有文件夹排序",
+    "reset": "重置",
+    "reset_sort_desc": "清除所有浏览器侧记录的文件夹独立排序偏好。",
     "page_503_title": "服务器繁忙",
     "page_504_title": "网关超时",
     "page_404_title": "未找到该内容",
@@ -1192,5 +1195,14 @@
     "vx_orders_loading": "加载订单中...",
     "vx_orders_empty": "暂无已购项目",
     "vx_direct_not_configured_msg": "无法启用文件夹直链，因为您的账号尚未配置直链功能。",
-    "vx_operation_error": "操作发生错误，请稍后重试。"
+    "vx_operation_error": "操作发生错误，请稍后重试。",
+    "vx_points_tab": "点数",
+    "vx_loading": "加载中...",
+    "vx_point_recharge_action": "充值点数",
+    "vx_point_transfer_action": "点数转账",
+    "vx_point_log_title": "变动记录",
+    "vx_fl_menu_set_price": "出售",
+    "vx_fl_menu_remove_price": "取消出售",
+    "vx_lang_label": "语言",
+    "vx_community_link": "交流社区"
 }
