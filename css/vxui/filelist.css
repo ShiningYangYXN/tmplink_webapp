@@ -394,16 +394,34 @@ body.vx-fl-has-sponsor .vx-content {
 }
 
 .vx-hot-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 5px;
     color: #EF4444;
-    margin-left: 4px;
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.22);
+    border-radius: 10px;
+    padding: 1px 5px;
+    font-size: 11px;
+    vertical-align: middle;
 }
 
 .vx-like-badge {
     display: inline-flex;
     align-items: center;
     gap: 2px;
-    margin-left: 8px;
+    margin-left: 5px;
     color: #EC4899;
+    background: rgba(236, 72, 153, 0.08);
+    border: 1px solid rgba(236, 72, 153, 0.22);
+    border-radius: 10px;
+    padding: 1px 6px;
+    font-size: 11px;
+    vertical-align: middle;
+}
+
+.vx-like-badge iconpark-icon {
     font-size: 12px;
 }
 

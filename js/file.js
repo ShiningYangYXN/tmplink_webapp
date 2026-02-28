@@ -164,6 +164,8 @@ class FilePageController {
 
         if (rsp && rsp.status === 1) {
             const fileinfo = rsp.data;
+            fileinfo.name = fileinfo.name || fileinfo.fname;
+            fileinfo.size = fileinfo.size || fileinfo.fsize_formated;
             this.currentFileDetails = fileinfo;
 
             $('#file_messenger').hide();
@@ -315,7 +317,72 @@ class FilePageController {
                 $('#downloadAlert').fadeIn();
             }
 
+            const needPurchase = !!(fileinfo.for_sale && !fileinfo.purchased);
+            const filePrice = Math.max(0, parseInt(fileinfo.price, 10) || 0);
+            const userPoints = (typeof TL !== 'undefined' && TL.logined && typeof TL.user_point !== 'undefined') ? (parseInt(TL.user_point, 10) || 0) : 0;
+            const pointsEnough = userPoints >= filePrice;
+
+            const downloadBtnText = this.$downloadBtn?.querySelector('.download-btn-text');
+            const pointsHintEl = document.getElementById('file_download_points_hint');
+            if (downloadBtnText) {
+                if (!needPurchase) {
+                    downloadBtnText.textContent = app?.languageData?.file_btn_download_fast || '下载';
+                    if (pointsHintEl) { pointsHintEl.style.display = 'none'; pointsHintEl.textContent = ''; }
+                } else if (typeof TL !== 'undefined' && TL.logined) {
+                    const tplAvailable = app?.languageData?.file_points_available || '可用 %s 点';
+                    if (pointsHintEl) {
+                        pointsHintEl.textContent = tplAvailable.replace('%s', String(userPoints));
+                        pointsHintEl.style.display = 'block';
+                    }
+                    if (pointsEnough) {
+                        downloadBtnText.textContent = app?.languageData?.file_btn_purchase || '购买';
+                    } else {
+                        downloadBtnText.textContent = app?.languageData?.file_btn_recharge || '去充值';
+                    }
+                } else {
+                    downloadBtnText.textContent = app?.languageData?.file_btn_purchase || '购买';
+                    if (pointsHintEl) { pointsHintEl.style.display = 'none'; pointsHintEl.textContent = ''; }
+                }
+            }
+
             const downloadHandler = () => {
+                if (this.currentFileDetails && this.currentFileDetails.for_sale && !this.currentFileDetails.purchased) {
+                    if (typeof TL === 'undefined' || !TL.logined) {
+                        if (typeof localStorage !== 'undefined') localStorage.setItem('return_page', typeof getCurrentURL === 'function' ? getCurrentURL() : window.location.href);
+                        if (typeof app !== 'undefined' && typeof app.open === 'function') app.open('/login');
+                        else if (typeof TL !== 'undefined' && typeof TL.alert === 'function') TL.alert(app?.languageData?.status_need_login || '请先登录');
+                        return;
+                    }
+                    const price = Math.max(0, parseInt(this.currentFileDetails.price, 10) || 0);
+                    const points = (typeof TL !== 'undefined' && typeof TL.user_point !== 'undefined') ? (parseInt(TL.user_point, 10) || 0) : 0;
+                    if (points < price) {
+                        if (typeof app !== 'undefined' && typeof app.open === 'function') app.open('/tpl/vxui/shop.html');
+                        return;
+                    }
+                    const apiFile = (typeof TL !== 'undefined' && TL.api_file) ? TL.api_file : '/api_v2/file';
+                    const token = (typeof TL !== 'undefined' && TL.api_token) ? TL.api_token : '';
+                    $.post(apiFile, { action: 'file_purchase', ukey: params.ukey, token: token }, (rsp) => {
+                        if (rsp && rsp.status === 1) {
+                            this.currentFileDetails.purchased = true;
+                            if (typeof TL !== 'undefined' && TL.current_file_details) TL.current_file_details.purchased = true;
+                            const label = this.$downloadBtn?.querySelector('.download-btn-text');
+                            if (label) label.textContent = app?.languageData?.file_btn_download_fast || '下载';
+                            const hintEl = document.getElementById('file_download_points_hint');
+                            if (hintEl) { hintEl.style.display = 'none'; hintEl.textContent = ''; }
+                            // 仅刷新按钮状态，不弹窗；用户可点击「下载」开始下载
+                        } else {
+                            const msg = (rsp && rsp.data && rsp.data.message) || (app?.languageData?.alert_error || '购买失败');
+                            if (typeof TL !== 'undefined' && typeof TL.alert === 'function') TL.alert(msg);
+                            else alert(msg);
+                        }
+                    }, 'json').fail(() => {
+                        const msg = app?.languageData?.alert_error || '网络错误';
+                        if (typeof TL !== 'undefined' && typeof TL.alert === 'function') TL.alert(msg);
+                        else alert(msg);
+                    });
+                    return;
+                }
+
                 if (typeof TL !== 'undefined' && TL.sponsor) {
                     this.updateHighSpeedStatus('enhanced');
                 }

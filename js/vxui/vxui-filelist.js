@@ -2265,6 +2265,17 @@ var VX_FILELIST = VX_FILELIST || {
             filenameLink = `<a href="/file?ukey=${file.ukey}" tmpui-app="true" target="_blank" onclick="event.stopPropagation();">${this.escapeHtml(file.fname)}</a>`;
         }
         
+        // 售价标记（for_sale=true 时显示）
+        const priceTag = (file.for_sale && file.price > 0)
+            ? `<span class="vx-price-tag" title="${this.t('vx_file_for_sale', '付费文件')}: ${file.price} ${this.t('vx_points', '点数')}">
+                   <iconpark-icon name="funds"></iconpark-icon>${file.price}
+               </span>`
+            : '';
+        // 购买状态标记（purchased=false 且 for_sale=true 时标记为「待购买」）
+        const unpurchasedTag = (file.for_sale && file.purchased === false)
+            ? `<span class="vx-unpurchased-tag">${this.t('vx_unpurchased', '未购买')}</span>`
+            : '';
+
         row.innerHTML = `
             ${showCheckbox ? '<div class="vx-list-checkbox" onclick="event.stopPropagation(); VX_FILELIST.toggleItemSelect(this.parentNode)"></div>' : ''}
             <div class="vx-list-name">
@@ -2273,6 +2284,8 @@ var VX_FILELIST = VX_FILELIST || {
                     ${filenameLink}
                     ${file.hot > 0 ? '<iconpark-icon name="fire" class="vx-hot-badge"></iconpark-icon>' : ''}
                     ${file.like > 0 ? `<span class="vx-like-badge"><iconpark-icon name="like"></iconpark-icon>${file.like}</span>` : ''}
+                    ${priceTag}
+                    ${unpurchasedTag}
                     ${(file.lefttime > 0 && !isPermanent) ? `
                         <span class="vx-lefttime" data-tmplink-lefttime="${file.lefttime}">
                             <iconpark-icon name="clock"></iconpark-icon>
@@ -3142,12 +3155,10 @@ var VX_FILELIST = VX_FILELIST || {
     downloadFile(ukey, filename) {
         // 如果没有提供文件名，尝试从当前文件列表中查找
         if (!filename) {
-            // 尝试在 fileList 中查找
             const foundFile = this.fileList && this.fileList.find(f => f.ukey === ukey);
             if (foundFile && foundFile.fname) {
                 filename = foundFile.fname;
             } else {
-                // 也尝试在 photoList 中查找 (以防万一是在相册模式下调用的)
                 const foundPhoto = this.photoList && this.photoList.find(p => p.ukey === ukey);
                 if (foundPhoto && foundPhoto.fname) {
                     filename = foundPhoto.fname;
@@ -3157,11 +3168,375 @@ var VX_FILELIST = VX_FILELIST || {
 
         const name = filename || ukey || 'file';
         this.trackUI(`vui_download[${name}]`);
-        if (typeof VXUI !== 'undefined' && typeof VXUI.toastInfo === 'function') {
-            VXUI.toastInfo(this.t('vx_download_start', '开始下载'));
-        }
+
+        // 先检查文件是否设有售价，再决定是否直接下载
         const listBtn = document.querySelector(`.vx-list-row[data-ukey="${ukey}"] [data-role="download-btn"]`);
-        this.downloadByUkey(ukey, { filename, listBtn });
+        this._checkDownloadReqAndDownload(ukey, filename, listBtn);
+    },
+
+    /**
+     * 调用 download_req 检查是否需要付费，若需要则显示付费弹窗，否则直接下载
+     */
+    async _checkDownloadReqAndDownload(ukey, filename, listBtn) {
+        const fileApiUrl = (typeof TL !== 'undefined' && TL.api_file)
+            ? TL.api_file
+            : '/api_v2/file';
+        const token = this.getToken() || '';
+
+        try {
+            const rsp = await new Promise((resolve, reject) => {
+                $.post(fileApiUrl, {
+                    action: 'download_req',
+                    ukey: ukey,
+                    token: token
+                }, resolve, 'json').fail(reject);
+            });
+
+            if (rsp && rsp.status === 1) {
+                // 免费或已购买，直接下载
+                if (typeof VXUI !== 'undefined' && typeof VXUI.toastInfo === 'function') {
+                    VXUI.toastInfo(this.t('vx_download_start', '开始下载'));
+                }
+                this.downloadByUkey(ukey, { filename, listBtn });
+            } else if (rsp && rsp.status === 0 && rsp.data && rsp.data.for_sale) {
+                // 付费文件，显示购买弹窗
+                this.showFilePurchaseModal(ukey, rsp.data);
+            } else {
+                // 其他错误（例如需要登录）
+                const msg = (rsp && rsp.data && rsp.data.message) || this.t('vx_download_failed_retry', '下载失败，请重试');
+                if (typeof VXUI !== 'undefined') VXUI.toastError(msg);
+            }
+        } catch (e) {
+            console.error('[VX_FILELIST] download_req check failed:', e);
+            // 网络异常时回退到直接下载
+            if (typeof VXUI !== 'undefined' && typeof VXUI.toastInfo === 'function') {
+                VXUI.toastInfo(this.t('vx_download_start', '开始下载'));
+            }
+            this.downloadByUkey(ukey, { filename, listBtn });
+        }
+    },
+
+    /**
+     * 显示付费文件购买弹窗
+     */
+    showFilePurchaseModal(ukey, priceData) {
+        const price = priceData.price || 0;
+        const modalId = 'vx-fl-purchase-modal';
+
+        // 动态创建或复用弹窗
+        let modal = document.getElementById(modalId);
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = modalId;
+            modal.className = 'vx-modal';
+            document.body.appendChild(modal);
+        }
+
+        const file = (this.fileList || []).find(f => String(f.ukey) === String(ukey))
+            || (this.photoList || []).find(f => String(f.ukey) === String(ukey));
+        const fname = file ? (file.fname || ukey) : ukey;
+
+        modal.innerHTML = `
+            <div class="vx-modal-overlay" onclick="VX_FILELIST.closeFilePurchaseModal()"></div>
+            <div class="vx-modal-container">
+                <div class="vx-modal-header">
+                    <h3 class="vx-modal-title">
+                        <iconpark-icon name="coin"></iconpark-icon>
+                        ${this.t('vx_file_purchase_title', '购买文件')}
+                    </h3>
+                    <button class="vx-modal-close" onclick="VX_FILELIST.closeFilePurchaseModal()">
+                        <iconpark-icon name="circle-xmark"></iconpark-icon>
+                    </button>
+                </div>
+                <div class="vx-modal-body">
+                    <p style="color:var(--vx-text-secondary);font-size:14px;margin-bottom:16px;">
+                        ${this.t('vx_file_purchase_desc', '该文件需要购买后才能下载。')}
+                    </p>
+                    <div style="background:var(--vx-bg-secondary);border-radius:var(--vx-radius-md);padding:16px;margin-bottom:16px;">
+                        <div style="font-size:14px;color:var(--vx-text-secondary);margin-bottom:8px;">${this.t('vx_file_name', '文件名')}</div>
+                        <div style="font-size:15px;font-weight:600;color:var(--vx-text);word-break:break-all;">${this.escapeHtml(fname)}</div>
+                    </div>
+                    <div style="text-align:center;padding:16px 0;">
+                        <div style="font-size:13px;color:var(--vx-text-secondary);margin-bottom:4px;">${this.t('vx_file_price', '售价')}</div>
+                        <div style="font-size:36px;font-weight:700;color:var(--vx-primary);">${price}</div>
+                        <div style="font-size:13px;color:var(--vx-text-muted);">${this.t('vx_points', '点数')}</div>
+                    </div>
+                </div>
+                <div class="vx-modal-footer">
+                    <div></div>
+                    <div class="vx-modal-actions">
+                        <button class="vx-btn vx-btn-secondary" onclick="VX_FILELIST.closeFilePurchaseModal()">
+                            ${this.t('btn_cancel', '取消')}
+                        </button>
+                        <button class="vx-btn vx-btn-primary" id="vx-fl-purchase-confirm-btn"
+                            onclick="VX_FILELIST.purchaseFile('${ukey}')">
+                            <iconpark-icon name="expenses-one"></iconpark-icon>
+                            ${this.t('vx_purchase_confirm', '花费')} ${price} ${this.t('vx_points', '点数')}${this.t('vx_purchase_confirm2', '购买')}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        modal.classList.add('vx-modal-open');
+        document.body.classList.add('vx-modal-body-open');
+    },
+
+    /**
+     * 关闭购买文件弹窗
+     */
+    closeFilePurchaseModal() {
+        const modal = document.getElementById('vx-fl-purchase-modal');
+        if (modal) {
+            modal.classList.remove('vx-modal-open');
+            document.body.classList.remove('vx-modal-body-open');
+        }
+    },
+
+    /**
+     * 购买文件 (调用 file_purchase API)
+     */
+    async purchaseFile(ukey) {
+        const token = this.getToken();
+        if (!token) {
+            if (typeof VXUI !== 'undefined') VXUI.toastWarning(this.t('vx_need_login', '请先登录'));
+            return;
+        }
+
+        const btn = document.getElementById('vx-fl-purchase-confirm-btn');
+        if (btn) { btn.disabled = true; }
+
+        const fileApiUrl = (typeof TL !== 'undefined' && TL.api_file)
+            ? TL.api_file
+            : '/api_v2/file';
+
+        try {
+            const rsp = await new Promise((resolve, reject) => {
+                $.post(fileApiUrl, {
+                    action: 'file_purchase',
+                    ukey: ukey,
+                    token: token
+                }, resolve, 'json').fail(reject);
+            });
+
+            if (rsp && rsp.status === 1) {
+                this.closeFilePurchaseModal();
+                if (typeof VXUI !== 'undefined') VXUI.toastSuccess(this.t('vx_purchase_success', '购买成功！'));
+                // 购买成功后自动触发下载
+                setTimeout(() => this.downloadFile(ukey), 600);
+            } else {
+                const msg = (rsp && rsp.data && rsp.data.message) || this.t('vx_purchase_failed', '购买失败');
+                if (typeof VXUI !== 'undefined') VXUI.toastError(msg);
+                if (btn) btn.disabled = false;
+            }
+        } catch (e) {
+            console.error('[VX_FILELIST] purchaseFile error:', e);
+            if (typeof VXUI !== 'undefined') VXUI.toastError(this.t('error_network', '网络错误'));
+            if (btn) btn.disabled = false;
+        }
+    },
+
+    /**
+     * 检查当前用户是否为赞助者（需要赞助者才能使用文件售价功能）
+     */
+    _isSponsor() {
+        return typeof TL !== 'undefined' && TL.logined === 1 && TL.sponsor !== false;
+    },
+
+    /**
+     * 显示设定文件售价弹窗（仅赞助者 + 文件所有者可用）
+     */
+    setFilePriceModal(ukey) {
+        if (!this.isOwner) {
+            if (typeof VXUI !== 'undefined') VXUI.toastWarning(this.t('vx_no_permission', '无权限'));
+            return;
+        }
+        if (!this._isSponsor()) {
+            if (typeof VXUI !== 'undefined') VXUI.toastWarning(this.t('vx_sponsor_required', '此功能需要赞助者权益'));
+            return;
+        }
+
+        this._currentSetPriceUkey = ukey;
+        const file = (this.fileList || []).find(f => String(f.ukey) === String(ukey));
+        const currentPrice = (file && file.for_sale && file.price) ? file.price : '';
+        const fname = file ? (file.fname || ukey) : ukey;
+
+        const modalId = 'vx-fl-setprice-modal';
+        let modal = document.getElementById(modalId);
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = modalId;
+            modal.className = 'vx-modal';
+            document.body.appendChild(modal);
+        }
+
+        modal.innerHTML = `
+            <div class="vx-modal-overlay" onclick="VX_FILELIST.closeSetPriceModal()"></div>
+            <div class="vx-modal-container" style="max-width:360px;">
+                <div class="vx-modal-header">
+                    <h3 class="vx-modal-title">
+                        <iconpark-icon name="funds"></iconpark-icon>
+                        ${this.t('vx_sell_file', '\u51fa\u552e')} · <span style="font-weight:400;font-size:14px;opacity:.7;">${this.escapeHtml(fname)}</span>
+                    </h3>
+                    <button class="vx-modal-close" onclick="VX_FILELIST.closeSetPriceModal()">
+                        <iconpark-icon name="circle-xmark"></iconpark-icon>
+                    </button>
+                </div>
+                <div class="vx-modal-body" style="padding-top:12px;padding-bottom:12px;">
+                    <input type="number" id="vx-fl-price-input" class="vx-input"
+                        value="${currentPrice}" min="1"
+                        placeholder="${this.t('vx_price_placeholder', '\u51fa\u552e\u4ef7\u683c\uff08\u70b9\u6570\uff09')}"
+                        style="width:100%;font-size:20px;text-align:center;padding:12px;"
+                        oninput="VX_FILELIST._updatePricePreview()">
+                    <div id="vx-fl-price-preview" style="text-align:center;font-size:12px;color:var(--vx-text-muted);margin-top:6px;">
+                        ${currentPrice ? '≈ \u00a5' + (currentPrice / 100).toFixed(2) : '\u4e70\u5bb6\u70b9\u6570\u5168\u989d\u8f6c\u5165\u60a8\u7684\u8d26\u6237'}
+                    </div>
+                </div>
+                <div class="vx-modal-footer">
+                    <div></div>
+                    <div class="vx-modal-actions">
+                        <button class="vx-btn vx-btn-secondary" onclick="VX_FILELIST.closeSetPriceModal()">
+                            ${this.t('btn_cancel', '\u53d6\u6d88')}
+                        </button>
+                        <button class="vx-btn vx-btn-primary" onclick="VX_FILELIST.confirmSetFilePrice()">
+                            ${this.t('vx_save', '\u4fdd\u5b58')}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        modal.classList.add('vx-modal-open');
+        document.body.classList.add('vx-modal-body-open');
+        setTimeout(() => {
+            const input = document.getElementById('vx-fl-price-input');
+            if (input) input.focus();
+        }, 100);
+    },
+
+    /**
+     * 关闭设价弹窗
+     */
+    closeSetPriceModal() {
+        const modal = document.getElementById('vx-fl-setprice-modal');
+        if (modal) {
+            modal.classList.remove('vx-modal-open');
+            document.body.classList.remove('vx-modal-body-open');
+        }
+    },
+
+    _updatePricePreview() {
+        const input = document.getElementById('vx-fl-price-input');
+        const preview = document.getElementById('vx-fl-price-preview');
+        if (!input || !preview) return;
+        const val = parseInt(input.value, 10);
+        if (val >= 1) {
+            preview.textContent = '≈ ¥' + (val / 100).toFixed(2) + ' · $' + (val / 600).toFixed(2);
+            preview.style.color = 'var(--vx-primary)';
+        } else {
+            preview.textContent = this.t('vx_price_placeholder', '出售价格（点数）');
+            preview.style.color = 'var(--vx-text-muted)';
+        }
+    },
+
+    /**
+     * 确认设定售价 (调用 file_price_set API)
+     */
+    async confirmSetFilePrice() {
+        const ukey = this._currentSetPriceUkey;
+        if (!ukey) return;
+
+        const priceInput = document.getElementById('vx-fl-price-input');
+        const price = priceInput ? parseInt(priceInput.value, 10) : 0;
+
+        if (!price || price < 1) {
+            if (typeof VXUI !== 'undefined') VXUI.toastWarning(this.t('vx_price_invalid', '售价必须大于 0'));
+            return;
+        }
+
+        const token = this.getToken();
+        if (!token) {
+            if (typeof VXUI !== 'undefined') VXUI.toastWarning(this.t('vx_need_login', '请先登录'));
+            return;
+        }
+
+        const fileApiUrl = (typeof TL !== 'undefined' && TL.api_file)
+            ? TL.api_file
+            : '/api_v2/file';
+
+        try {
+            const rsp = await new Promise((resolve, reject) => {
+                $.post(fileApiUrl, {
+                    action: 'file_price_set',
+                    ukey: ukey,
+                    token: token,
+                    price: price
+                }, resolve, 'json').fail(reject);
+            });
+
+            if (rsp && rsp.status === 1) {
+                this.closeSetPriceModal();
+                if (typeof VXUI !== 'undefined') VXUI.toastSuccess(this.t('vx_price_set_success', '售价设定成功'));
+                this.refresh();
+            } else {
+                const msg = (rsp && rsp.data && rsp.data.message) || this.t('vx_update_failed', '修改失败');
+                if (typeof VXUI !== 'undefined') VXUI.toastError(msg);
+            }
+        } catch (e) {
+            console.error('[VX_FILELIST] confirmSetFilePrice error:', e);
+            if (typeof VXUI !== 'undefined') VXUI.toastError(this.t('error_network', '网络错误'));
+        }
+    },
+
+    /**
+     * 取消文件售价 (调用 file_price_remove API)
+     */
+    async confirmRemoveFilePrice(ukey) {
+        if (!this.isOwner) {
+            if (typeof VXUI !== 'undefined') VXUI.toastWarning(this.t('vx_no_permission', '无权限'));
+            return;
+        }
+
+        const token = this.getToken();
+        if (!token) {
+            if (typeof VXUI !== 'undefined') VXUI.toastWarning(this.t('vx_need_login', '请先登录'));
+            return;
+        }
+
+        const confirmed = await new Promise(resolve => {
+            if (typeof VXUI !== 'undefined' && typeof VXUI.confirm === 'function') {
+                VXUI.confirm(this.t('vx_remove_price_confirm', '确定要取消此文件的售价吗？这将使文件恢复免费下载。'), resolve);
+            } else {
+                resolve(window.confirm(this.t('vx_remove_price_confirm', '确定要取消此文件的售价吗？这将使文件恢复免费下载。')));
+            }
+        });
+
+        if (!confirmed) return;
+
+        const fileApiUrl = (typeof TL !== 'undefined' && TL.api_file)
+            ? TL.api_file
+            : '/api_v2/file';
+
+        try {
+            const rsp = await new Promise((resolve, reject) => {
+                $.post(fileApiUrl, {
+                    action: 'file_price_remove',
+                    ukey: ukey,
+                    token: token
+                }, resolve, 'json').fail(reject);
+            });
+
+            if (rsp && rsp.status === 1) {
+                if (typeof VXUI !== 'undefined') VXUI.toastSuccess(this.t('vx_price_removed', '已取消售价'));
+                this.refresh();
+            } else {
+                const msg = (rsp && rsp.data && rsp.data.message) || this.t('vx_update_failed', '操作失败');
+                if (typeof VXUI !== 'undefined') VXUI.toastError(msg);
+            }
+        } catch (e) {
+            console.error('[VX_FILELIST] confirmRemoveFilePrice error:', e);
+            if (typeof VXUI !== 'undefined') VXUI.toastError(this.t('error_network', '网络错误'));
+        }
     },
     
     /**
@@ -4320,6 +4695,17 @@ var VX_FILELIST = VX_FILELIST || {
                 <span data-tpl="modal_settings_upload_model3">7 天</span>
             </div>
 
+            <div class="vx-context-divider" id="vx-fl-menu-price-divider" style="display:none;"></div>
+            <div class="vx-context-label" id="vx-fl-menu-price-label" style="display:none;">售价管理</div>
+            <div class="vx-context-item" id="vx-fl-menu-set-price" style="display:none;" onclick="VX_FILELIST.setFilePriceCM()">
+                <iconpark-icon name="funds"></iconpark-icon>
+                <span>设定售价</span>
+            </div>
+            <div class="vx-context-item vx-text-danger" id="vx-fl-menu-remove-price" style="display:none;" onclick="VX_FILELIST.removeFilePriceCM()">
+                <iconpark-icon name="circle-xmark"></iconpark-icon>
+                <span>取消售价</span>
+            </div>
+
             <div class="vx-context-divider"></div>
             <div class="vx-context-item vx-text-danger" id="vx-fl-menu-delete" onclick="VX_FILELIST.deleteContextItem()">
                 <iconpark-icon name="trash"></iconpark-icon>
@@ -4658,6 +5044,31 @@ var VX_FILELIST = VX_FILELIST || {
                 }
             }
             
+            // 售价管理（仅 owner + 赞助者）
+            if (canOwnerOps && this._isSponsor()) {
+                const fileObj = (this.fileList || []).find(f => String(f.ukey) === String(ukey));
+                const isForSale = fileObj && fileObj.for_sale;
+                menuItems.push({
+                    type: 'label',
+                    text: this.t('vx_price_manage', '售价管理')
+                });
+                menuItems.push({
+                    icon: 'funds',
+                    text: isForSale
+                        ? this.t('vx_update_price', '修改售价')
+                        : this.t('vx_set_price', '设定售价'),
+                    action: () => this.setFilePriceModal(ukey)
+                });
+                if (isForSale) {
+                    menuItems.push({
+                        icon: 'circle-xmark',
+                        text: this.t('vx_remove_price', '取消售价（恢复免费）'),
+                        danger: true,
+                        action: () => this.confirmRemoveFilePrice(ukey)
+                    });
+                }
+            }
+
             // 删除
             if (canOwnerOps) {
                 menuItems.push({
@@ -4792,6 +5203,38 @@ var VX_FILELIST = VX_FILELIST || {
         // 非 owner：隐藏重命名/删除
         if (elRename) elRename.style.display = canOwnerOps ? '' : 'none';
         if (elDelete) elDelete.style.display = canOwnerOps ? '' : 'none';
+
+        // 售价管理（仅 owner + 赞助者 + 文件类型）
+        const canManagePrice = isFile && canOwnerOps && this._isSponsor();
+        const elPriceDivider = document.getElementById('vx-fl-menu-price-divider');
+        const elPriceLabel = document.getElementById('vx-fl-menu-price-label');
+        const elSetPrice = document.getElementById('vx-fl-menu-set-price');
+        const elRemovePrice = document.getElementById('vx-fl-menu-remove-price');
+        const fileForSale = file && file.for_sale;
+        if (elPriceDivider) elPriceDivider.style.display = canManagePrice ? '' : 'none';
+        if (elPriceLabel) elPriceLabel.style.display = canManagePrice ? '' : 'none';
+        if (elSetPrice) elSetPrice.style.display = canManagePrice ? '' : 'none';
+        if (elRemovePrice) elRemovePrice.style.display = (canManagePrice && fileForSale) ? '' : 'none';
+    },
+
+    /**
+     * 右键菜单 - 设定售价
+     */
+    setFilePriceCM() {
+        if (!this.contextTarget) return;
+        const ukey = this.contextTarget.dataset.ukey;
+        this.hideContextMenu();
+        this.setFilePriceModal(ukey);
+    },
+
+    /**
+     * 右键菜单 - 取消售价
+     */
+    removeFilePriceCM() {
+        if (!this.contextTarget) return;
+        const ukey = this.contextTarget.dataset.ukey;
+        this.hideContextMenu();
+        this.confirmRemoveFilePrice(ukey);
     },
     
     openContextItem() {

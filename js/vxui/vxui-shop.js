@@ -135,7 +135,7 @@ window.VX_SHOP = {
 
         // Restore tab from URL (deep-link)
         const nextTab = (params && params.tab) ? String(params.tab) : 'products';
-        if (nextTab === 'purchased' || nextTab === 'products') {
+        if (nextTab === 'purchased' || nextTab === 'products' || nextTab === 'points') {
             this.showTab(nextTab);
         } else {
             this.showTab('products');
@@ -169,13 +169,13 @@ window.VX_SHOP = {
 
         this.trackUI(`vui_shop[${tab}]`);
 
-        // Sync URL so products/purchased can be directly opened
+        // Sync URL so products/purchased/points can be directly opened
         if (typeof VXUI !== 'undefined' && VXUI && typeof VXUI.updateUrl === 'function') {
             const currentParams = (typeof VXUI.getUrlParams === 'function') ? (VXUI.getUrlParams() || {}) : {};
             delete currentParams.module;
 
-            if (tab === 'purchased') {
-                currentParams.tab = 'purchased';
+            if (tab === 'purchased' || tab === 'points') {
+                currentParams.tab = tab;
             } else {
                 delete currentParams.tab;
             }
@@ -200,16 +200,26 @@ window.VX_SHOP = {
         // Update header subtitle
         const subtitleEl = document.getElementById('vx-shop-header-subtitle');
         if (subtitleEl) {
-            subtitleEl.textContent = tab === 'purchased' ? ' - ' + this.t('navbar_hr_shop', '已购') : '';
+            if (tab === 'purchased') {
+                subtitleEl.textContent = ' - ' + this.t('navbar_hr_shop', '已购');
+            } else if (tab === 'points') {
+                subtitleEl.textContent = ' - ' + this.t('vx_points_tab', '点数');
+            } else {
+                subtitleEl.textContent = '';
+            }
         }
         
         // Show/hide content
         document.getElementById('vx-shop-products').style.display = tab === 'products' ? 'block' : 'none';
         document.getElementById('vx-shop-purchased').style.display = tab === 'purchased' ? 'block' : 'none';
+        const pointsEl = document.getElementById('vx-shop-points');
+        if (pointsEl) pointsEl.style.display = tab === 'points' ? 'block' : 'none';
         
-        // Load orders if switching to purchased tab
+        // Load content for the tab
         if (tab === 'purchased') {
             this.loadOrders();
+        } else if (tab === 'points') {
+            this.loadPointLog(0);
         }
     },
     
@@ -682,6 +692,8 @@ window.VX_SHOP = {
      */
     renderPaymentMethods() {
         const isCN = this.isCN();
+        // 每次渲染支付方式时同步重置默认选中状态，避免旧 selectedPayment 残留
+        this.selectedPayment = isCN ? 'alipay' : 'paypal';
         
         return `
             <h4 class="vx-section-title">${this.t('payment_method', '支付方式')}</h4>
@@ -693,6 +705,10 @@ window.VX_SHOP = {
                 <div class="vx-payment-method ${!isCN ? 'selected' : ''}" onclick="VX_SHOP.selectPayment('paypal')">
                     <span class="vx-pay-icon vx-pay-paypal">P</span>
                     <span>PayPal</span>
+                </div>
+                <div class="vx-payment-method" onclick="VX_SHOP.selectPayment('point')">
+                    <span class="vx-pay-icon vx-pay-point"><iconpark-icon name="funds"></iconpark-icon></span>
+                    <span>${this.t('vx_pay_point', '点数')}</span>
                 </div>
             </div>
         `;
@@ -744,7 +760,8 @@ window.VX_SHOP = {
             el.classList.remove('selected');
             const text = el.textContent.toLowerCase();
             if ((method === 'alipay' && text.includes('支付宝')) ||
-                (method === 'paypal' && text.includes('paypal'))) {
+                (method === 'paypal' && text.includes('paypal')) ||
+                (method === 'point' && (text.includes('点数') || text.includes('point')))) {
                 el.classList.add('selected');
             }
         });
@@ -782,13 +799,22 @@ window.VX_SHOP = {
             }
         }
         
-        // Convert to USD if PayPal
+        // Convert to USD if PayPal, points if Point
         let displayPrice = priceCNY;
         let unit = '¥';
         
         if (this.selectedPayment === 'paypal') {
             displayPrice = Math.ceil(priceCNY / 6);
             unit = '$';
+        } else if (this.selectedPayment === 'point') {
+            displayPrice = priceCNY * 100;
+            unit = '';
+            // 更新单位显示元素
+            const unitEl = document.getElementById('vx-modal-unit');
+            const totalEl = document.getElementById('vx-modal-total');
+            if (unitEl) unitEl.textContent = '';
+            if (totalEl) totalEl.textContent = displayPrice + ' ' + this.t('vx_points', '点数');
+            return;
         }
         
         document.getElementById('vx-modal-unit').textContent = unit;
@@ -820,10 +846,17 @@ window.VX_SHOP = {
     },
     
     /**
-     * Make order and redirect to payment
+     * Make order and redirect to payment (or buy with points)
      */
     async makeOrder() {
         this.trackUI('vui_shop[make_order]');
+
+        // 点数支付：直接调用 point_buy API
+        if (this.selectedPayment === 'point') {
+            await this._buyWithPoints();
+            return;
+        }
+
         const isPayPal = this.selectedPayment === 'paypal';
         let priceCNY = 0;
         
@@ -870,6 +903,87 @@ window.VX_SHOP = {
         
         // Open payment in new window
         window.open(paymentUrl, '_blank');
+    },
+
+    /**
+     * 使用点数购买商品 (point_buy API)
+     */
+    async _buyWithPoints() {
+        const token = (typeof TL !== 'undefined' && TL.api_token) ? TL.api_token : '';
+        if (!token) {
+            VXUI.toastWarning(this.t('vx_need_login', '请先登录'));
+            return;
+        }
+
+        let productType = '';
+        let productId = '';
+        let productTimes = 1;
+
+        if (this.selectedProduct === 'firstTimeSponsor') {
+            productType = 'ADDON';
+            productId = 'FN01';
+            productTimes = 1;
+        } else if (this.selectedProduct === 'sponsor') {
+            productType = 'ADDON';
+            productId = 'HS';
+            productTimes = this.selectedTime;
+        } else if (this.selectedProduct === 'storage') {
+            productType = 'ADDON';
+            productId = this.selectedCode;
+            productTimes = this.selectedTime;
+        } else if (this.selectedProduct === 'direct') {
+            productType = 'DIRECT';
+            productId = this.selectedCode;
+            productTimes = this.quantity;
+        } else {
+            VXUI.toastError(this.t('vx_invalid_product', '无效商品'));
+            return;
+        }
+
+        // 禁用按钮防重复提交
+        const buyBtn = document.querySelector('#vx-shop-modal .vx-btn-primary');
+        if (buyBtn) buyBtn.disabled = true;
+
+        VXUI.toastInfo(this.t('vx_processing', '处理中...'));
+
+        try {
+            const apiUrl = (typeof TL !== 'undefined' && TL.api_pay) ? TL.api_pay : '/api_v2/pay';
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    action: 'point_buy',
+                    token,
+                    product_type: productType,
+                    product_id: productId,
+                    product_times: productTimes
+                }).toString()
+            });
+            const result = await response.json();
+
+            if (result.status === 1) {
+                this.closeModal();
+                VXUI.toastSuccess(this.t('vx_purchase_success', '购买成功！'));
+                // 刷新用户数据
+                if (typeof TL !== 'undefined' && TL.get_details) {
+                    TL.get_details(() => this.loadUserStatus());
+                } else {
+                    this.loadUserStatus();
+                }
+            } else if (result.status === 1001) {
+                VXUI.toastError(this.t('vx_point_insufficient', '点数不足'));
+            } else if (result.status === 1002) {
+                VXUI.toastError(this.t('vx_product_already_bought', '该商品不能重复购买'));
+            } else {
+                const msg = (result.data && result.data.message) || result.debug || this.t('vx_purchase_failed', '购买失败');
+                VXUI.toastError(msg);
+            }
+        } catch (e) {
+            console.error('[VX_SHOP] _buyWithPoints error:', e);
+            VXUI.toastError(this.t('error_network', '网络错误'));
+        } finally {
+            if (buyBtn) buyBtn.disabled = false;
+        }
     },
     
     /**
@@ -986,13 +1100,19 @@ window.VX_SHOP = {
     refreshDynamicText() {
         // Update header subtitle
         const subtitleEl = document.getElementById('vx-shop-header-subtitle');
-        if (subtitleEl && this.currentTab === 'purchased') {
-            subtitleEl.textContent = ' - ' + this.t('navbar_hr_shop', '已购');
+        if (subtitleEl) {
+            if (this.currentTab === 'purchased') {
+                subtitleEl.textContent = ' - ' + this.t('navbar_hr_shop', '已购');
+            } else if (this.currentTab === 'points') {
+                subtitleEl.textContent = ' - ' + this.t('vx_points_tab', '点数');
+            }
         }
         
-        // Reload orders if on purchased tab to refresh translated content
+        // Reload content if on purchased or points tab
         if (this.currentTab === 'purchased') {
             this.loadOrders();
+        } else if (this.currentTab === 'points') {
+            this.loadPointLog(0);
         }
     },
     /**
@@ -1038,7 +1158,7 @@ window.VX_SHOP = {
                     this.loadUserStatus();
                 }
             } else if (result.status === 1004) {
-                VXUI.toastWarning(this.t('sponsor_exchange_insufficient', '分享值不足 100'));
+                VXUI.toastWarning(this.t('sponsor_exchange_insufficient', '分享値不足 100'));
             } else if (result.status === 1002) {
                 VXUI.toastWarning(this.t('sponsor_exchange_already', '本月已兑换'));
             } else if (result.status === 0) {
@@ -1057,6 +1177,361 @@ window.VX_SHOP = {
         } finally {
             this.isSponsorExchangeProcessing = false;
         }
+    },
+
+    // ==================== 点数管理 ====================
+
+    /**
+     * 加载点数变动历史
+     */
+    async loadPointLog(page = 0) {
+        const container = document.getElementById('vx-point-log-list');
+        if (!container) return;
+
+        const token = (typeof TL !== 'undefined' && TL.api_token) ? TL.api_token : '';
+        if (!token) {
+            container.innerHTML = `<div class="vx-orders-empty">${this.t('vx_need_login', '请先登录')}</div>`;
+            return;
+        }
+
+        container.innerHTML = `
+            <div class="vx-orders-loading">
+                <div class="vx-spinner"></div>
+                <span>${this.t('vx_loading', '加载中...')}</span>
+            </div>
+        `;
+
+        try {
+            const apiUrl = (typeof TL !== 'undefined' && TL.api_pay) ? TL.api_pay : '/api_v2/pay';
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `action=point_log&token=${encodeURIComponent(token)}&page=${page}`
+            });
+            const rsp = await response.json();
+
+            if (rsp.status === 101 || !rsp.data || !Array.isArray(rsp.data)) {
+                container.innerHTML = `
+                    <div class="vx-orders-empty">
+                        <iconpark-icon name="folder-open" style="font-size:48px;color:var(--vx-text-muted);"></iconpark-icon>
+                        <p>${this.t('vx_no_point_log', '暂无点数变动记录')}</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const actionLabels = {
+                'charge': this.t('vx_point_charge', '充値'),
+                'buy': this.t('vx_point_buy', '购买商品'),
+                'transfer_out': this.t('vx_point_transfer_out', '转出'),
+                'transfer_in': this.t('vx_point_transfer_in', '转入'),
+                'file_purchase': this.t('vx_point_file_purchase', '购买文件'),
+                'file_sale': this.t('vx_point_file_sale', '文件售出收入')
+            };
+
+            let html = '';
+            for (const record of rsp.data) {
+                const changeClass = record.change >= 0 ? 'vx-point-income' : 'vx-point-expense';
+                const changeText = record.change >= 0 ? `+${record.change}` : `${record.change}`;
+                const actionLabel = actionLabels[record.action] || record.action;
+                html += `
+                    <div class="vx-point-log-item">
+                        <div class="vx-point-log-icon">
+                            <iconpark-icon name="${record.change >= 0 ? 'income-one' : 'expenses-one'}"></iconpark-icon>
+                        </div>
+                        <div class="vx-point-log-info">
+                            <div class="vx-point-log-action">${this.escapeHtml(actionLabel)}</div>
+                            <div class="vx-point-log-content" title="${this.escapeHtml(record.content || '')}">
+                                ${this.escapeHtml(record.content || '')}
+                            </div>
+                            <div class="vx-point-log-time">${record.ctime || ''}</div>
+                        </div>
+                        <div class="vx-point-log-amount">
+                            <span class="${changeClass}">${changeText}</span>
+                            <div class="vx-point-log-balance">${this.t('vx_point_after', '余额')}: ${record.now}</div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // 分页按钮
+            const paginationHtml = `
+                <div class="vx-point-pagination">
+                    ${page > 0 ? `<button class="vx-btn vx-btn-secondary" onclick="VX_SHOP.loadPointLog(${page - 1})">上一页</button>` : ''}
+                    <span>${this.t('vx_page', '第')} ${page + 1} ${this.t('vx_page_suffix', '页')}</span>
+                    ${rsp.data.length >= 20 ? `<button class="vx-btn vx-btn-secondary" onclick="VX_SHOP.loadPointLog(${page + 1})">下一页</button>` : ''}
+                </div>
+            `;
+
+            container.innerHTML = html + paginationHtml;
+
+        } catch (e) {
+            console.error('[VX_SHOP] loadPointLog error:', e);
+            container.innerHTML = `
+                <div class="vx-orders-empty">
+                    <iconpark-icon name="circle-exclamation" style="font-size:48px;color:var(--vx-danger);"></iconpark-icon>
+                    <p>${this.t('vx_load_failed', '加载失败')}</p>
+                </div>
+            `;
+        }
+    },
+
+    /**
+     * 打开点数转账弹窗
+     */
+    openPointTransfer() {
+        this.trackUI('vui_shop[point_transfer]');
+        const modalTitle = document.getElementById('vx-modal-title');
+        const modalBody = document.getElementById('vx-modal-body');
+        if (!modalTitle || !modalBody) return;
+
+        modalTitle.innerHTML = `<iconpark-icon name="expenses"></iconpark-icon> ${this.t('vx_point_transfer_title', '点数转账')}`;
+        modalBody.innerHTML = `
+            <p class="vx-modal-desc">${this.t('vx_transfer_desc', '将您账户内的点数转给其他用户。无手续费，收入方全额到账。最少 100 点。')}</p>
+            <div class="vx-form-group" style="margin-bottom:16px;">
+                <label style="font-size:14px;font-weight:500;color:var(--vx-text);display:block;margin-bottom:6px;">
+                    ${this.t('vx_to_uid', '收款用户 UID')}
+                </label>
+                <input type="number" id="vx-transfer-uid" class="vx-input" min="1"
+                    placeholder="${this.t('vx_enter_uid', '请输入对方 UID')}" style="width:100%;">
+            </div>
+            <div class="vx-form-group">
+                <label style="font-size:14px;font-weight:500;color:var(--vx-text);display:block;margin-bottom:6px;">
+                    ${this.t('vx_transfer_amount', '转账点数')}
+                </label>
+                <input type="number" id="vx-transfer-amount" class="vx-input" min="100"
+                    placeholder="${this.t('vx_min_100_points', '最少 100 点')}" style="width:100%;">
+            </div>
+        `;
+
+        const modalFooter = document.querySelector('#vx-shop-modal .vx-modal-footer');
+        this._originalFooter = modalFooter ? modalFooter.innerHTML : null;
+        if (modalFooter) {
+            modalFooter.innerHTML = `
+                <div></div>
+                <div class="vx-modal-actions">
+                    <button class="vx-btn vx-btn-secondary" onclick="VX_SHOP.closeModal(); VX_SHOP.restoreModalFooter()">${this.t('btn_cancel', '取消')}</button>
+                    <button class="vx-btn vx-btn-primary" id="vx-transfer-submit-btn" onclick="VX_SHOP.submitPointTransfer()">${this.t('vx_transfer_submit', '确认转账')}</button>
+                </div>
+            `;
+        }
+
+        this.showModal();
+        setTimeout(() => {
+            const el = document.getElementById('vx-transfer-uid');
+            if (el) el.focus();
+        }, 100);
+    },
+
+    /**
+     * 提交点数转账
+     */
+    async submitPointTransfer() {
+        const toUid = parseInt(document.getElementById('vx-transfer-uid')?.value || '0', 10);
+        const amount = parseInt(document.getElementById('vx-transfer-amount')?.value || '0', 10);
+
+        if (!toUid || toUid <= 0) {
+            VXUI.toastWarning(this.t('vx_enter_valid_uid', '请输入有效的 UID'));
+            return;
+        }
+        if (!amount || amount < 100) {
+            VXUI.toastWarning(this.t('vx_min_transfer', '转账最少 100 点'));
+            return;
+        }
+
+        const token = (typeof TL !== 'undefined' && TL.api_token) ? TL.api_token : '';
+        if (!token) {
+            VXUI.toastWarning(this.t('vx_need_login', '请先登录'));
+            return;
+        }
+
+        const btn = document.getElementById('vx-transfer-submit-btn');
+        if (btn) btn.disabled = true;
+
+        this.trackUI('vui_shop[submit_transfer]');
+
+        try {
+            const apiUrl = (typeof TL !== 'undefined' && TL.api_pay) ? TL.api_pay : '/api_v2/pay';
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    action: 'point_transfer',
+                    token,
+                    to_uid: toUid,
+                    amount
+                }).toString()
+            });
+            const result = await response.json();
+
+            if (result.status === 1) {
+                VXUI.toastSuccess(this.t('vx_transfer_success', '转账成功'));
+                this.closeModal();
+                this.restoreModalFooter();
+                // 刷新点数日志
+                this.loadPointLog(0);
+            } else {
+                const msg = (result.data && result.data.message) || this.t('vx_transfer_failed', '转账失败');
+                VXUI.toastError(msg);
+                if (btn) btn.disabled = false;
+            }
+        } catch (e) {
+            console.error('[VX_SHOP] submitPointTransfer error:', e);
+            VXUI.toastError(this.t('error_network', '网络错误'));
+            if (btn) btn.disabled = false;
+        }
+    },
+
+    /**
+     * 打开点数充值中心
+     */
+    openPointRecharge() {
+        this.trackUI('vui_shop[point_recharge]');
+        const isCN = this.isCN();
+        const rate = isCN ? 100 : 600;
+        const minAmount = isCN ? 1 : 10;
+        const maxAmount = 500;
+        const currency = isCN ? '¥' : '$';
+        const unit = isCN ? '元' : 'USD';
+
+        const modalTitle = document.getElementById('vx-modal-title');
+        const modalBody = document.getElementById('vx-modal-body');
+        if (!modalTitle || !modalBody) return;
+
+        modalTitle.innerHTML = `<iconpark-icon name="paper-money-two"></iconpark-icon> ${this.t('vx_recharge_title', '点数充值')}`;
+
+        const presets = isCN
+            ? [10, 30, 60, 100]
+            : [10, 20, 50, 100];
+
+        const presetsHtml = presets.map(p => `
+            <div class="vx-recharge-preset" onclick="VX_SHOP._selectRechargePreset(${p})">
+                ${currency}${p}
+                <span class="vx-recharge-preset-points">= ${p * rate} 点</span>
+            </div>
+        `).join('');
+
+        modalBody.innerHTML = `
+            <p class="vx-modal-desc">${this.t('vx_recharge_rate', isCN ? '1 元 = 100 点。' : '1 USD = 600 点。')}</p>
+            <div class="vx-recharge-presets">${presetsHtml}</div>
+            <div class="vx-recharge-custom">
+                <label class="vx-recharge-custom-label">${this.t('vx_custom_amount', '自定义金额')}</label>
+                <div class="vx-recharge-input-row">
+                    <span class="vx-recharge-currency">${currency}</span>
+                    <input type="number" id="vx-recharge-amount" class="vx-input"
+                        min="${minAmount}" max="${maxAmount}" step="1" value="${presets[0]}"
+                        placeholder="${currency}${minAmount} - ${currency}${maxAmount}"
+                        style="flex:1;"
+                        oninput="VX_SHOP._updateRechargePreview()">
+                </div>
+                <div id="vx-recharge-preview" class="vx-recharge-preview">
+                    = ${presets[0] * rate} ${this.t('vx_points', '点数')}
+                </div>
+            </div>
+        `;
+
+        // store state for submit
+        this._rechargeIsCN = isCN;
+        this._rechargeRate = rate;
+        this._rechargeMinAmount = minAmount;
+        this._rechargeMaxAmount = maxAmount;
+
+        const modalFooter = document.querySelector('#vx-shop-modal .vx-modal-footer');
+        this._originalFooter = modalFooter ? modalFooter.innerHTML : null;
+        if (modalFooter) {
+            modalFooter.innerHTML = `
+                <div></div>
+                <div class="vx-modal-actions">
+                    <button class="vx-btn vx-btn-secondary" onclick="VX_SHOP.closeModal(); VX_SHOP.restoreModalFooter()">${this.t('btn_cancel', '取消')}</button>
+                    <button class="vx-btn vx-btn-primary" onclick="VX_SHOP.submitRecharge()">
+                        <iconpark-icon name="paper-money-two"></iconpark-icon>
+                        ${this.t('btn_recharge_now', '立即充值')}
+                    </button>
+                </div>
+            `;
+        }
+
+        this.showModal();
+    },
+
+    /**
+     * 快速选定充值预设金额
+     */
+    _selectRechargePreset(amount) {
+        const input = document.getElementById('vx-recharge-amount');
+        if (input) {
+            input.value = amount;
+            this._updateRechargePreview();
+        }
+        // 高亮选中的预设
+        document.querySelectorAll('.vx-recharge-preset').forEach(el => {
+            el.classList.toggle('vx-recharge-preset-active',
+                parseInt(el.textContent) === amount || el.textContent.trim().startsWith(
+                    (this._rechargeIsCN ? '¥' : '$') + amount
+                ));
+        });
+    },
+
+    /**
+     * 实时更新点数预览
+     */
+    _updateRechargePreview() {
+        const input = document.getElementById('vx-recharge-amount');
+        const preview = document.getElementById('vx-recharge-preview');
+        if (!input || !preview) return;
+        const val = parseFloat(input.value) || 0;
+        const points = Math.floor(val * (this._rechargeRate || 100));
+        const currency = this._rechargeIsCN ? '¥' : '$';
+        const min = this._rechargeMinAmount || 1;
+        const max = this._rechargeMaxAmount || 500;
+        if (val < min) {
+            preview.textContent = this.t('vx_amount_too_low', `最少 ${currency}${min}`);
+            preview.style.color = 'var(--vx-danger)';
+        } else if (val > max) {
+            preview.textContent = this.t('vx_amount_too_high', `单次最多 ${currency}${max}`);
+            preview.style.color = 'var(--vx-danger)';
+        } else {
+            preview.textContent = `= ${points} ${this.t('vx_points', '点数')}`;
+            preview.style.color = 'var(--vx-primary)';
+        }
+    },
+
+    /**
+     * 提交充值，跳转至支付页面
+     */
+    submitRecharge() {
+        const token = (typeof TL !== 'undefined' && TL.api_token) ? TL.api_token : '';
+        const input = document.getElementById('vx-recharge-amount');
+        if (!input) return;
+        const amount = parseFloat(input.value) || 0;
+        const min = this._rechargeMinAmount || 1;
+        const max = this._rechargeMaxAmount || 500;
+        const currency = this._rechargeIsCN ? '¥' : '$';
+        if (amount < min) {
+            VXUI.toastWarning(this.t('vx_amount_too_low', `最少充值 ${currency}${min}`));
+            input.focus();
+            return;
+        }
+        if (amount > max) {
+            VXUI.toastWarning(this.t('vx_amount_too_high', `单次最多充值 ${currency}${max}`));
+            input.focus();
+            return;
+        }
+        const points = Math.floor(amount * (this._rechargeRate || 100));
+        const payUrl = this._rechargeIsCN
+            ? `https://pay.vezii.com/id4/pay_v2?price=${amount}&token=${token}&prepare_type=POINT&prepare_code=POINT_CUSTOM`
+            : `https://s12.tmp.link/payment/paypal/checkout_v2?price=${amount}&token=${token}&prepare_type=POINT&prepare_code=POINT_CUSTOM`;
+        window.open(payUrl, '_blank');
+    },
+
+    /**
+     * Helper to escape HTML
+     */
+    escapeHtml(str) {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = String(str);
+        return div.innerHTML;
     }
 };
 
