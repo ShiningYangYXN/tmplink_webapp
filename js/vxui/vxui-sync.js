@@ -1793,123 +1793,133 @@ var VX_SYNC = VX_SYNC || {
             // Just connect signaling; offers are created when peers come online.
             this.connectSignaling();
         } else {
-            // Peer: single RTCPeerConnection to Host
-            const config = {
-                iceServers: iceServers,
-                iceTransportPolicy: icePolicy
-            };
-            this.rtcPeerConnection = new RTCPeerConnection(config);
-
-            this.rtcPeerConnection.onicecandidate = (e) => {
-                if (e.candidate) {
-                    var parts = (e.candidate.candidate || '').split(' ');
-                    var candType = parts.length > 7 ? parts[7] : 'unknown';
-                    if (this._relayMode && candType !== 'relay') {
-                        // In relay-only mode, non-relay candidates should not appear.
-                        console.warn('[SYNC] Unexpected non-relay candidate in relay mode: type=' + candType);
-                    }
-                    console.log('[SYNC] ICE candidate gathered: type=' + candType + ' addr=' + (e.candidate.address || '?') + ' port=' + (e.candidate.port || '?'));
-                    this.sendSignaling({
-                        type: 'ice_candidate',
-                        candidate: e.candidate
-                    });
-                } else {
-                    console.log('[SYNC] ICE gathering complete (null candidate)');
-                }
-            };
-
-            this.rtcPeerConnection.onicegatheringstatechange = () => {
-                console.log('[SYNC] ICE gathering state: ' + this.rtcPeerConnection.iceGatheringState);
-            };
-
-            this.rtcPeerConnection.oniceconnectionstatechange = () => {
-                var state = this.rtcPeerConnection.iceConnectionState;
-                console.log('[SYNC] ICE connection state: ' + state);
-
-                if (state === 'connected' || state === 'completed') {
-                    if (this._iceTimeout) {
-                        clearTimeout(this._iceTimeout);
-                        this._iceTimeout = null;
-                    }
-                    // Detect connection mode (P2P vs Relay)
-                    this._detectConnectionMode(this.rtcPeerConnection, function(mode) {
-                        if (VX_SYNC._hostConnectionMode !== mode) {
-                            console.log('[SYNC] Host connection mode: ' + VX_SYNC._hostConnectionMode + ' -> ' + mode);
-                            VX_SYNC._hostConnectionMode = mode;
-                            VX_SYNC.updatePeerList();
-                        }
-                    });
-                }
-
-                if (state === 'failed' || state === 'disconnected') {
-                    console.warn('[SYNC] ICE connection ' + state + ', will reconnect');
-                    if (this._iceTimeout) {
-                        clearTimeout(this._iceTimeout);
-                        this._iceTimeout = null;
-                    }
-                    this.scheduleReconnect();
-                }
-            };
-
-            this.rtcPeerConnection.onconnectionstatechange = () => {
-                var state = this.rtcPeerConnection.connectionState;
-                console.log('[SYNC] Connection state: ' + state);
-
-                if (state === 'failed') {
-                    console.warn('[SYNC] P2P connection failed, will reconnect');
-                    this._connState = 'failed';
-                    if (this._iceTimeout) {
-                        clearTimeout(this._iceTimeout);
-                        this._iceTimeout = null;
-                    }
-                    // Track consecutive failures by mode to detect stale
-                    // credentials vs network issues.
-                    if (this._relayMode) {
-                        this._relayFailCount = (this._relayFailCount || 0) + 1;
-                        // If relay fails 3+ times consecutively, the TURN
-                        // credential may have expired — clear cache to force
-                        // a fresh fetch on the next initWebRTC().
-                        if (this._relayFailCount >= 3) {
-                            console.warn('[SYNC] Relay failed ' + this._relayFailCount + ' times, clearing TURN credential cache');
-                            this._turnCredCache = null;
-                            this._relayFailCount = 0;
-                        }
-                    } else {
-                        this._p2pFailCount = (this._p2pFailCount || 0) + 1;
-                    }
-                    this._relayMode = true; // Fallback to relay mode on connection failure
-                    this.scheduleReconnect();
-                } else if (state === 'connected') {
-                    // Reset failure counters on successful connection
-                    this._p2pFailCount = 0;
-                    this._relayFailCount = 0;
-                    var hostName = this._getHostDisplayName();
-                    var connLabel = this._relayMode
-                        ? '\u5df2\u901a\u8fc7\u4e2d\u8f6c\u8fde\u63a5\u5230 ' + hostName
-                        : '\u5df2\u76f4\u63a5\u8fde\u63a5\u5230 ' + hostName;
-                    console.log('[SYNC] ' + connLabel + ' connection established');
-                    if (this._iceTimeout) {
-                        clearTimeout(this._iceTimeout);
-                        this._iceTimeout = null;
-                    }
-                    this.addActivity('p2p_connected', connLabel);
-                    this.updateStatus('ready');
-                }
-            };
-
-            this.rtcPeerConnection.onicecandidateerror = (e) => {
-                console.warn('[SYNC] ICE candidate error:', e.errorCode, e.errorText);
-            };
-
-            // Peer side: accept incoming DataChannel from Host
-            this.rtcPeerConnection.ondatachannel = (e) => {
-                console.log('[SYNC] Accepted incoming DataChannel: label=' + e.channel.label);
-                this.acceptDC = e.channel;
-                this.setupDataChannel(e.channel);
-            };
-
+            await this._createPeerConnection();
             this.connectSignaling();
         }
+    },
+
+    // _createPeerConnection creates a new RTCPeerConnection for the Peer
+    // to connect to the Host. This method is reused by:
+    // 1. initWebRTC() (initial connection)
+    // 2. scheduleReconnect() (ICE renegotiation after failure)
+    async _createPeerConnection() {
+        var iceServers = await this._fetchTurnCredentials();
+        var icePolicy = this._relayMode ? 'relay' : 'all';
+        console.log('[SYNC] Creating new RTCPeerConnection: icePolicy=' + icePolicy + ' (TURN servers: ' + (iceServers ? iceServers.length : 0) + ')');
+
+        const config = {
+            iceServers: iceServers,
+            iceTransportPolicy: icePolicy
+        };
+        this.rtcPeerConnection = new RTCPeerConnection(config);
+
+        this.rtcPeerConnection.onicecandidate = (e) => {
+            if (e.candidate) {
+                var parts = (e.candidate.candidate || '').split(' ');
+                var candType = parts.length > 7 ? parts[7] : 'unknown';
+                if (this._relayMode && candType !== 'relay') {
+                    // In relay-only mode, non-relay candidates should not appear.
+                    console.warn('[SYNC] Unexpected non-relay candidate in relay mode: type=' + candType);
+                }
+                console.log('[SYNC] ICE candidate gathered: type=' + candType + ' addr=' + (e.candidate.address || '?') + ' port=' + (e.candidate.port || '?'));
+                this.sendSignaling({
+                    type: 'ice_candidate',
+                    candidate: e.candidate
+                });
+            } else {
+                console.log('[SYNC] ICE gathering complete (null candidate)');
+            }
+        };
+
+        this.rtcPeerConnection.onicegatheringstatechange = () => {
+            console.log('[SYNC] ICE gathering state: ' + this.rtcPeerConnection.iceGatheringState);
+        };
+
+        this.rtcPeerConnection.oniceconnectionstatechange = () => {
+            var state = this.rtcPeerConnection.iceConnectionState;
+            console.log('[SYNC] ICE connection state: ' + state);
+
+            if (state === 'connected' || state === 'completed') {
+                if (this._iceTimeout) {
+                    clearTimeout(this._iceTimeout);
+                    this._iceTimeout = null;
+                }
+                // Detect connection mode (P2P vs Relay)
+                this._detectConnectionMode(this.rtcPeerConnection, function(mode) {
+                    if (VX_SYNC._hostConnectionMode !== mode) {
+                        console.log('[SYNC] Host connection mode: ' + VX_SYNC._hostConnectionMode + ' -> ' + mode);
+                        VX_SYNC._hostConnectionMode = mode;
+                        VX_SYNC.updatePeerList();
+                    }
+                });
+            }
+
+            if (state === 'failed' || state === 'disconnected') {
+                console.warn('[SYNC] ICE connection ' + state + ', will reconnect');
+                if (this._iceTimeout) {
+                    clearTimeout(this._iceTimeout);
+                    this._iceTimeout = null;
+                }
+                this.scheduleReconnect();
+            }
+        };
+
+        this.rtcPeerConnection.onconnectionstatechange = () => {
+            var state = this.rtcPeerConnection.connectionState;
+            console.log('[SYNC] Connection state: ' + state);
+
+            if (state === 'failed') {
+                console.warn('[SYNC] P2P connection failed, will reconnect');
+                this._connState = 'failed';
+                if (this._iceTimeout) {
+                    clearTimeout(this._iceTimeout);
+                    this._iceTimeout = null;
+                }
+                // Track consecutive failures by mode to detect stale
+                // credentials vs network issues.
+                if (this._relayMode) {
+                    this._relayFailCount = (this._relayFailCount || 0) + 1;
+                    // If relay fails 3+ times consecutively, the TURN
+                    // credential may have expired — clear cache to force
+                    // a fresh fetch on the next initWebRTC().
+                    if (this._relayFailCount >= 3) {
+                        console.warn('[SYNC] Relay failed ' + this._relayFailCount + ' times, clearing TURN credential cache');
+                        this._turnCredCache = null;
+                        this._relayFailCount = 0;
+                    }
+                } else {
+                    this._p2pFailCount = (this._p2pFailCount || 0) + 1;
+                }
+                this._relayMode = true; // Fallback to relay mode on connection failure
+                this.scheduleReconnect();
+            } else if (state === 'connected') {
+                // Reset failure counters on successful connection
+                this._p2pFailCount = 0;
+                this._relayFailCount = 0;
+                var hostName = this._getHostDisplayName();
+                var connLabel = this._relayMode
+                    ? '已通过中转连接到 ' + hostName
+                    : '已直接连接到 ' + hostName;
+                console.log('[SYNC] ' + connLabel + ' connection established');
+                if (this._iceTimeout) {
+                    clearTimeout(this._iceTimeout);
+                    this._iceTimeout = null;
+                }
+                this.addActivity('p2p_connected', connLabel);
+                this.updateStatus('ready');
+            }
+        };
+
+        this.rtcPeerConnection.onicecandidateerror = (e) => {
+            console.warn('[SYNC] ICE candidate error:', e.errorCode, e.errorText);
+        };
+
+        // Peer side: accept incoming DataChannel from Host
+        this.rtcPeerConnection.ondatachannel = (e) => {
+            console.log('[SYNC] Accepted incoming DataChannel: label=' + e.channel.label);
+            this.acceptDC = e.channel;
+            this.setupDataChannel(e.channel);
+        };
     },
 
     // Detect whether the current ICE connection is P2P (direct) or Relay (TURN).
@@ -2045,7 +2055,7 @@ var VX_SYNC = VX_SYNC || {
         console.log('[SYNC] Reconnecting in ' + delay + 'ms (attempt ' + this._reconnectAttempt + ')');
         this._connState = 'failed';
 
-        this._reconnectTimer = setTimeout(() => {
+        this._reconnectTimer = setTimeout(async () => {
             this._reconnectTimer = null;
             // Guard: if WSS is not open, defer this attempt — the WSS
             // reconnect handler will trigger scheduleReconnect again.
@@ -2056,33 +2066,72 @@ var VX_SYNC = VX_SYNC || {
                 return;
             }
             if (this.currentDrive) {
-                // Only re-init WebRTC (RTCPeerConnection + DataChannel).
-                // The global signalingWS stays open — it's per-user and shared
-                // across drives. connectSignaling() will re-send drive_enter.
+                // Close the old WebRTC connection. The WSS connection is still
+                // alive, so we do NOT send drive_leave/drive_enter — that would
+                // broadcast unnecessary presence offline/online notifications.
+                // Instead, we rebuild the RTCPeerConnection and request the Host
+                // to renegotiate via a dedicated webrtc_renegotiate message.
                 if (this.rtcPeerConnection) {
                     try { this.rtcPeerConnection.close(); } catch (e) {}
                     this.rtcPeerConnection = null;
                 }
+                if (this.acceptDC) {
+                    try { this.acceptDC.close(); } catch (e) {}
+                    this.acceptDC = null;
+                }
                 this._offerInProgress = false;
                 if (this._offerTimeout) { clearTimeout(this._offerTimeout); this._offerTimeout = null; }
                 this._peerDeviceIds = {};
-                // Send drive_leave first so the server removes us from the
-                // drive state. The subsequent drive_enter (from initWebRTC →
-                // connectSignaling) will be treated as a fresh entry and
-                // broadcast presence online, prompting the Host to create a
-                // new SDP offer. Without this, the server sees the device is
-                // already in the drive and skips the presence broadcast,
-                // leaving the Host with a stale/abandoned offer.
-                if (this.signalingWS && this.signalingWS.readyState === WebSocket.OPEN) {
-                    this.wsRequest('drive_leave', {
-                        drive_id: this.currentDrive.drive_id
-                    }, true);
-                }
-                this.initWebRTC();
+
+                this._connState = 'connecting';
+                await this._createPeerConnection();
+                this._requestWebRTCRenegotiate();
             }
         }, delay);
     },
-    
+
+    // _requestWebRTCRenegotiate sends a webrtc_renegotiate message to the Host
+    // via WSS, requesting the Host to create a new SDP offer. This replaces the
+    // old drive_leave/drive_enter pattern that caused unnecessary presence
+    // offline/online broadcasts.
+    _requestWebRTCRenegotiate() {
+        if (!this.signalingWS || this.signalingWS.readyState !== WebSocket.OPEN) {
+            console.warn('[SYNC] Cannot request renegotiate: WSS not open');
+            return;
+        }
+        var driveId = this.currentDrive ? this.currentDrive.drive_id : '';
+        var unified = {
+            type: 'webrtc_renegotiate',
+            drive_id: driveId,
+            to_device: 'host',
+            from_device: 'peer_' + this.getDeviceId()
+        };
+        this.signalingWS.send(JSON.stringify(unified));
+        console.log('[SYNC] Requested WebRTC renegotiation from Host (drive=' + driveId + ')');
+    },
+
+    // _handleWebRTCRenegotiate (Host-side) handles a Peer's request to re-create
+    // an SDP offer. Closes the existing per-peer connection if any and creates
+    // a new offer via _createOfferForPeer.
+    _handleWebRTCRenegotiate(msg) {
+        if (!this.isHost) return;
+        var peerDeviceId = this._extractDeviceIdFromPersistentId(msg.from_device);
+        if (!peerDeviceId) {
+            console.warn('[SYNC] webrtc_renegotiate: cannot extract device ID from ' + msg.from_device);
+            return;
+        }
+        console.log('[SYNC] Peer ' + peerDeviceId + ' requested WebRTC renegotiation');
+
+        // Close existing connection for this peer if any
+        if (this._peerConnections[peerDeviceId]) {
+            try { this._peerConnections[peerDeviceId].pc.close(); } catch (e) {}
+            delete this._peerConnections[peerDeviceId];
+        }
+
+        // Create new SDP offer for this peer
+        this._createOfferForPeer(peerDeviceId, '');
+    },
+
     // ========== WebRTC Signaling Handler ==========
     //
     // Handles ONLY WebRTC signaling messages (webrtc_offer, webrtc_answer,
@@ -4298,6 +4347,11 @@ var VX_SYNC = VX_SYNC || {
             case 'webrtc_answer':
             case 'ice_candidate':
                 this.handleSignalingMessage(msg);
+                break;
+
+            // ========== WebRTC renegotiation (Host-side) ==========
+            case 'webrtc_renegotiate':
+                this._handleWebRTCRenegotiate(msg);
                 break;
 
             // ========== Response types (for request/response matching) ==========
