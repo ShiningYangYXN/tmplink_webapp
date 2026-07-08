@@ -471,7 +471,16 @@ const VX_ACCOUNT = {
                 const userPoint = (typeof TL !== 'undefined' && typeof TL.user_point !== 'undefined') ? TL.user_point : 0;
                 pointsEl.textContent = userPoint;
             }
-            
+
+            // Sync drive quota (normal: 1 drive / 10 peers; sponsor: 10 drives / 99 peers)
+            const syncEl = document.getElementById('vx-stat-sync');
+            if (syncEl) {
+                const isSponsor = (typeof TL !== 'undefined' && TL.logined === 1 && TL.sponsor !== false);
+                const driveLimit = isSponsor ? 10 : 1;
+                const peerLimit = isSponsor ? 99 : 10;
+                syncEl.textContent = driveLimit + ' / ' + peerLimit;
+            }
+
             // Show publish section for sponsors or users with high share value
             const publishSection = document.getElementById('vx-profile-publish');
             if (publishSection) {
