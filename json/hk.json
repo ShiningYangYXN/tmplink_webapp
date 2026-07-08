@@ -1371,6 +1371,7 @@
     "sync_link_copied": "同步盤連結已複製",
     "sync_folder_bound": "已綁定資料夾：{name}",
     "sync_select_folder_failed": "選擇資料夾失敗",
+    "sync_change_folder": "更換",
     "sync_device_name_empty": "裝置名稱不能為空",
     "sync_device_name_set": "裝置名稱已設定為：{name}",
     "sync_save_failed": "儲存失敗，請重試",

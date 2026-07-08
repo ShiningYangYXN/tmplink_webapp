@@ -1370,6 +1370,7 @@
     "sync_link_copied": "同期ドライブのリンクをコピーしました",
     "sync_folder_bound": "フォルダをバインドしました：{name}",
     "sync_select_folder_failed": "フォルダの選択に失敗しました",
+    "sync_change_folder": "変更",
     "sync_device_name_empty": "デバイス名を入力してください",
     "sync_device_name_set": "デバイス名を設定しました：{name}",
     "sync_save_failed": "保存に失敗しました。再試行してください",

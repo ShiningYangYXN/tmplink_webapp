@@ -5869,14 +5869,17 @@ var VX_SYNC = VX_SYNC || {
         var detailPath = document.getElementById('sync-detail-folder-path');
         if (detailPath) {
             if (path) {
-                // Remove data-tpl so i18n translation doesn't overwrite the path
                 detailPath.removeAttribute('data-tpl');
                 detailPath.textContent = path;
             } else {
-                // Restore data-tpl for correct i18n translation
                 detailPath.setAttribute('data-tpl', 'sync_no_folder_selected');
                 detailPath.textContent = '\u672a\u9009\u62e9\u6587\u4ef6\u5939';
             }
+        }
+
+        var changeBtn = document.querySelector('.vx-sync-change-folder-btn');
+        if (changeBtn) {
+            changeBtn.style.display = path ? '' : 'none';
         }
     },
 
@@ -6537,6 +6540,7 @@ var VX_SYNC = VX_SYNC || {
             'start_server': '\ud83d\udfe2',
             'connect_host': '\ud83d\udd17',
             'bind_folder': '\ud83d\udcc2',
+            'change_folder': '\ud83d\udd04',
             'upload': '\u2b06\ufe0f',
             'download': '\u2b07\ufe0f',
             'delete': '\ud83d\uddd1\ufe0f',

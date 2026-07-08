@@ -1369,6 +1369,7 @@
     "sync_link_copied": "同步盘链接已复制",
     "sync_folder_bound": "已绑定文件夹：{name}",
     "sync_select_folder_failed": "选择文件夹失败",
+    "sync_change_folder": "更换",
     "sync_device_name_empty": "设备名称不能为空",
     "sync_device_name_set": "设备名称已设置为：{name}",
     "sync_save_failed": "保存失败，请重试",
