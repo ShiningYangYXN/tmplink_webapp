@@ -1,0 +1,1301 @@
+/* Sync Drive Module Styles */
+
+/* ==================== Consent Modal ==================== */
+.vx-sync-consent-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.vx-sync-consent-intro {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--vx-text);
+}
+
+.vx-sync-consent-section h4 {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--vx-text);
+}
+
+.vx-sync-consent-list {
+    margin: 0;
+    padding-left: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.vx-sync-consent-list li {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--vx-text-secondary);
+}
+
+.vx-sync-consent-warning {
+    display: flex;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: var(--vx-radius);
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.vx-sync-consent-warning iconpark-icon {
+    flex-shrink: 0;
+    color: #ef4444;
+    margin-top: 2px;
+}
+
+.vx-sync-consent-warning p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #ef4444;
+}
+
+.vx-sync-consent-warning p + p {
+    margin-top: 4px;
+}
+
+/* ==================== Usage Guide ==================== */
+.vx-sync-guide {
+    margin: 16px 20px 0;
+    border: 1px solid var(--vx-border);
+    border-radius: var(--vx-radius);
+    background: var(--vx-surface);
+    overflow: hidden;
+}
+
+.vx-sync-guide-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 14px;
+    border: none;
+    background: transparent;
+    color: var(--vx-text);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+}
+
+.vx-sync-guide-header iconpark-icon:first-child {
+    color: var(--vx-primary);
+    flex-shrink: 0;
+}
+
+.vx-sync-guide-arrow {
+    margin-left: auto;
+    color: var(--vx-text-muted);
+    transition: transform 0.2s ease;
+    flex-shrink: 0;
+}
+
+.vx-sync-guide:not(.vx-sync-guide-collapsed) .vx-sync-guide-arrow {
+    transform: rotate(180deg);
+}
+
+.vx-sync-guide-body {
+    padding: 0 14px 12px 14px;
+    border-top: 1px solid var(--vx-border);
+}
+
+.vx-sync-guide-collapsed .vx-sync-guide-body {
+    display: none;
+}
+
+.vx-sync-guide-steps {
+    margin: 10px 0 0 0;
+    padding-left: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.vx-sync-guide-steps li {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--vx-text-secondary);
+}
+
+.vx-sync-guide-steps li strong {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--vx-text);
+    font-weight: 600;
+    font-size: 13px;
+}
+
+/* ==================== Loading Overlay ==================== */
+.vx-sync-loading-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.vx-sync-loading-mask {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+}
+
+.vx-sync-loading-content {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 32px 40px;
+    background: var(--vx-surface);
+    border-radius: var(--vx-radius-lg);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    min-width: 280px;
+}
+
+.vx-sync-loading-title {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--vx-text);
+    text-align: center;
+}
+
+.vx-sync-loading-bar {
+    width: 100%;
+    height: 6px;
+    background: var(--vx-border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.vx-sync-loading-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--vx-primary);
+    border-radius: 3px;
+    transition: width 0.4s ease;
+}
+
+.vx-sync-loading-sub {
+    margin: 0;
+    font-size: 12px;
+    color: var(--vx-text-muted);
+    text-align: center;
+    min-height: 16px;
+}
+
+.vx-sync-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+.vx-sync-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+/* Detail view should not scroll - internal layout handles scrolling */
+#sync-drive-detail.vx-sync-view {
+    overflow: hidden;
+}
+
+/* Drive list view should scroll */
+#sync-drive-list.vx-sync-view {
+    overflow-y: auto;
+}
+
+/* Drive lobby view should scroll */
+#sync-drive-lobby.vx-sync-view {
+    overflow-y: auto;
+}
+
+/* Mobile Topbar */
+.vx-sync-mob-topbar .vx-sync-mob-upload-btn {
+    display: flex;
+}
+
+/* Sync-specific Badge */
+.vx-sync-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    background: var(--vx-primary);
+    color: white;
+    white-space: nowrap;
+}
+
+/* Drive Grid */
+.vx-sync-drives-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 16px;
+    padding: 20px;
+}
+
+.vx-sync-drive-card {
+    background: var(--vx-surface);
+    border: 1px solid var(--vx-border);
+    border-radius: var(--vx-radius);
+    padding: 16px;
+    cursor: pointer;
+    transition: var(--vx-transition-fast);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    position: relative;
+}
+
+.vx-sync-drive-card:hover {
+    border-color: var(--vx-primary);
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.15);
+}
+
+/* Card head: icon + name/meta */
+.vx-sync-drive-card-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    min-width: 0;
+}
+
+.vx-sync-drive-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: var(--vx-radius);
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(37, 99, 235, 0.08));
+    color: var(--vx-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.vx-sync-drive-icon iconpark-icon {
+    font-size: 28px;
+    display: inline-flex;
+}
+
+.vx-sync-drive-head-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-right: 28px; /* leave room for delete button */
+}
+
+/* Delete button on drive card */
+.vx-sync-drive-delete-btn {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--vx-text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: var(--vx-transition-fast);
+    z-index: 2;
+}
+
+.vx-sync-drive-card:hover .vx-sync-drive-delete-btn {
+    opacity: 1;
+}
+
+.vx-sync-drive-delete-btn:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+}
+
+.vx-sync-drive-card h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--vx-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1.3;
+}
+
+.vx-sync-drive-card .vx-sync-drive-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--vx-text-secondary);
+    flex-wrap: wrap;
+}
+
+.vx-sync-drive-meta-sep {
+    color: var(--vx-border);
+    user-select: none;
+}
+
+/* Card foot: role tag + action */
+.vx-sync-drive-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.vx-sync-drive-action-area {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+
+.vx-sync-drive-meta-info {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+}
+
+.vx-sync-drive-action {
+    flex-shrink: 0;
+}
+
+.vx-sync-drive-action:disabled {
+    cursor: not-allowed;
+}
+
+/* Drive Card Tags */
+.vx-sync-drive-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--vx-bg-secondary);
+    color: var(--vx-text-secondary);
+    flex-shrink: 0;
+}
+
+.vx-sync-drive-tag-host {
+    background: rgba(99, 102, 241, 0.12);
+    color: var(--vx-primary);
+}
+
+.vx-sync-drive-tag-peer {
+    background: rgba(107, 114, 128, 0.12);
+    color: #6b7280;
+}
+
+/* Peer status tag (online/offline) */
+.vx-sync-drive-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+    background: rgba(16, 185, 129, 0.1);
+    color: #10b981;
+    white-space: nowrap;
+}
+
+.vx-sync-drive-status-offline {
+    background: rgba(239, 68, 68, 0.08);
+    color: #ef4444;
+}
+
+/* Host Online Dot */
+.vx-sync-host-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 4px;
+}
+
+.vx-sync-host-dot.online {
+    background: #10b981;
+}
+
+.vx-sync-host-dot.offline {
+    background: #ef4444;
+}
+
+/* Status Bar */
+.vx-sync-status-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 20px;
+    border-bottom: 1px solid var(--vx-border);
+    background: var(--vx-surface);
+    font-size: 13px;
+    color: var(--vx-text-secondary);
+    flex-shrink: 0;
+}
+
+#sync-status-icon {
+    flex-shrink: 0;
+    color: #10b981;
+}
+
+#sync-status-icon.status-idle { color: #6b7280; }
+#sync-status-icon.status-ready { color: #10b981; }
+#sync-status-icon.status-syncing { color: #f59e0b; animation: status-pulse 1.5s ease-in-out infinite; }
+#sync-status-icon.status-offline { color: #ef4444; }
+
+@keyframes status-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.vx-sync-status-sep {
+    width: 1px;
+    height: 16px;
+    background: var(--vx-border);
+    margin: 0 4px;
+}
+
+.vx-sync-folder-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--vx-text-secondary);
+}
+
+.vx-sync-folder-path {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Connection Mode Badge */
+.vx-sync-mode-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 10px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.vx-sync-mode-badge.mode-p2p {
+    background: rgba(16, 185, 129, 0.1);
+    color: #10b981;
+}
+
+.vx-sync-mode-badge.mode-relay {
+    background: rgba(245, 158, 11, 0.1);
+    color: #f59e0b;
+}
+
+/* Transfer Stats */
+.vx-sync-transfer-stats {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--vx-text-secondary);
+    white-space: nowrap;
+}
+
+.vx-sync-stats-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.vx-sync-stats-sep {
+    width: 1px;
+    height: 12px;
+    background: var(--vx-border);
+    margin: 0 2px;
+    display: inline-block;
+}
+
+/* Per-file Progress Bar (thin bar at bottom of file row) */
+.vx-list-row {
+    position: relative;
+    overflow: hidden;
+}
+
+.vx-list-row-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    background: transparent;
+    z-index: 1;
+}
+
+.vx-list-row-progress-fill {
+    height: 100%;
+    border-radius: 0;
+    background: var(--vx-primary);
+    transition: width 0.2s ease;
+}
+
+.vx-list-row-progress-danger {
+    background: var(--vx-danger, #ef4444);
+    opacity: 0.6;
+    animation: vx-sync-delete-pulse 1s ease-in-out infinite;
+}
+
+@keyframes vx-sync-delete-pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 0.8; }
+}
+
+/* File status in status column */
+.vx-list-status {
+    width: 80px;
+    text-align: center;
+    color: var(--vx-text-secondary);
+    font-size: 13px;
+}
+
+.vx-list-status .vx-sync-status-synced {
+    color: var(--vx-success, #22c55e);
+    margin-right: 4px;
+    vertical-align: middle;
+}
+
+.vx-list-status .vx-sync-status-pending {
+    color: var(--vx-warning, #f59e0b);
+    margin-right: 4px;
+    vertical-align: middle;
+}
+
+.vx-list-status .vx-sync-status-remote {
+    color: var(--vx-text-muted);
+    margin-right: 4px;
+    vertical-align: middle;
+}
+
+.vx-list-status .vx-sync-status-conflict {
+    color: var(--vx-danger, #ef4444);
+    margin-right: 4px;
+    vertical-align: middle;
+}
+
+.vx-list-status span {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+
+/* Modification time column */
+.vx-list-mtime {
+    width: 130px;
+    text-align: right;
+    color: var(--vx-text-secondary);
+    font-size: 13px;
+}
+
+/* Host Offline Overlay */
+.vx-sync-offline-overlay {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 300px;
+}
+
+.vx-sync-offline-content {
+    text-align: center;
+    max-width: 360px;
+    padding: 40px 24px;
+}
+
+.vx-sync-offline-content iconpark-icon {
+    color: #ef4444;
+    margin-bottom: 16px;
+}
+
+.vx-sync-offline-content h3 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 8px 0;
+    color: var(--vx-text);
+}
+
+.vx-sync-offline-content p {
+    font-size: 14px;
+    color: var(--vx-text-secondary);
+    margin: 0 0 20px 0;
+    line-height: 1.5;
+}
+
+/* Role Badge */
+.vx-sync-role-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    line-height: 1.4;
+}
+
+.vx-sync-role-badge.role-host {
+    background: rgba(99, 102, 241, 0.12);
+    color: #4f46e5;
+}
+
+.vx-sync-role-badge.role-peer {
+    background: rgba(16, 185, 129, 0.12);
+    color: #059669;
+}
+
+html.vx-dark .vx-sync-role-badge.role-host {
+    background: rgba(99, 102, 241, 0.2);
+    color: #a5b4fc;
+}
+
+html.vx-dark .vx-sync-role-badge.role-peer {
+    background: rgba(16, 185, 129, 0.2);
+    color: #6ee7b7;
+}
+
+/* Device Name Chip */
+/* Device name button (ghost button variant) in header.
+   Inherits vx-btn vx-btn-ghost styles; only overrides needed for the
+   device-name specific children (name overflow, edit icon). */
+.vx-header .vx-btn-ghost .vx-sync-device-chip-name {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.vx-header .vx-btn-ghost .vx-sync-device-chip-edit {
+    flex-shrink: 0;
+    opacity: 0;
+    margin-left: 2px;
+    transition: opacity 0.15s ease;
+}
+
+.vx-header .vx-btn-ghost:hover .vx-sync-device-chip-edit {
+    opacity: 1;
+}
+
+@media (max-width: 768px) {
+    .vx-header .vx-btn-ghost .vx-sync-device-chip-name {
+        max-width: 100px;
+    }
+}
+
+/* Drive Lobby */
+.vx-sync-lobby-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    gap: 12px;
+    overflow-y: auto;
+}
+
+/* Compact Setup Card: info left, action right */
+.vx-sync-lobby-card {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    background: var(--vx-surface);
+    border: 1px solid var(--vx-border);
+    border-radius: var(--vx-radius);
+    padding: 12px 16px;
+    width: 100%;
+    max-width: 520px;
+}
+
+.vx-sync-lobby-card-info {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.vx-sync-lobby-card-info iconpark-icon {
+    color: var(--vx-primary);
+    flex-shrink: 0;
+}
+
+.vx-sync-lobby-drive-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--vx-text-secondary);
+    flex-wrap: wrap;
+}
+
+.vx-sync-lobby-drive-meta strong {
+    color: var(--vx-text);
+    font-weight: 600;
+}
+
+.vx-sync-lobby-card-action {
+    flex-shrink: 0;
+}
+
+.vx-sync-lobby-meta-sep {
+    color: var(--vx-border);
+    user-select: none;
+}
+
+#sync-lobby-host-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+#sync-lobby-host-dot.online {
+    background: #10b981;
+}
+
+#sync-lobby-host-dot.offline {
+    background: #ef4444;
+}
+
+.vx-sync-lobby-hint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border-radius: var(--vx-radius);
+    background: rgba(239, 68, 68, 0.08);
+    color: #ef4444;
+    font-size: 13px;
+    max-width: 520px;
+    width: 100%;
+}
+
+.vx-sync-lobby-hint iconpark-icon {
+    flex-shrink: 0;
+}
+
+.vx-sync-folder-bind-path {
+    flex: 1;
+    padding: 5px 10px;
+    background: var(--vx-bg-secondary);
+    border: 1px solid var(--vx-border);
+    border-radius: var(--vx-radius-sm);
+    font-size: 13px;
+    color: var(--vx-text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ==================== Create Modal ==================== */
+.vx-sync-create-modal {
+    /* Override default modal styling */
+}
+
+.vx-sync-modal-body {
+    padding: 24px;
+}
+
+.vx-sync-hidden {
+    display: none !important;
+}
+
+.vx-sync-form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vx-sync-form-group label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--vx-text);
+}
+
+.vx-sync-input {
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--vx-bg-secondary);
+    border: 1px solid var(--vx-border);
+    border-radius: var(--vx-radius-sm);
+    font-size: 14px;
+    color: var(--vx-text);
+    transition: border-color 0.2s ease;
+    outline: none;
+}
+
+.vx-sync-input:focus {
+    border-color: var(--vx-primary);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.vx-sync-input::placeholder {
+    color: var(--vx-text-muted);
+}
+
+.vx-sync-modal-footer {
+    padding: 16px 24px;
+    border-top: 1px solid var(--vx-border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+/* Peer Tag */
+.vx-sync-peer-tag-me {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 5px;
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 16px;
+    background: var(--vx-primary);
+    color: white;
+    flex-shrink: 0;
+    margin-left: 6px;
+}
+
+/* Per-peer connection mode badge (P2P / Relay) */
+.vx-sync-conn-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 5px;
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 16px;
+    font-weight: 600;
+    flex-shrink: 0;
+    margin-left: 6px;
+}
+.vx-sync-conn-badge.mode-p2p {
+    background: rgba(34, 197, 94, 0.12);
+    color: #16a34a;
+}
+.vx-sync-conn-badge.mode-relay {
+    background: rgba(245, 158, 11, 0.12);
+    color: #d97706;
+}
+.vx-sync-conn-badge.mode-unknown {
+    background: var(--vx-bg);
+    color: var(--vx-text-muted);
+}
+
+.vx-sync-peer-count {
+    font-size: 11px;
+    color: var(--vx-text-muted);
+    background: var(--vx-bg);
+    padding: 0 6px;
+    border-radius: 8px;
+    line-height: 18px;
+}
+
+.vx-sync-peer-empty {
+    padding: 16px 12px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--vx-text-muted);
+    background: var(--vx-surface);
+}
+
+/* Peer List (vx-list style) */
+.vx-sync-list-view .vx-list-row {
+    cursor: default;
+}
+
+#sync-view-files .vx-list-row {
+    cursor: pointer;
+}
+
+/* ==================== Detail Layout (single column, switch by tab) ==================== */
+.vx-sync-detail-layout {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+    min-height: 0;
+}
+
+.vx-sync-main-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    min-width: 0;
+}
+
+.vx-sync-main-content .vx-list-container {
+    margin: 0;
+}
+
+.vx-sync-list-view {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.vx-sync-list-view .vx-list-container {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+    border: none;
+    border-radius: 0;
+}
+
+.vx-sync-list-view .vx-list-header {
+    background: var(--vx-bg);
+    border-bottom: 1px solid var(--vx-border);
+}
+
+.vx-list-col-mtime {
+    width: 130px;
+    text-align: right;
+}
+
+.vx-list-col-status {
+    width: 80px;
+    text-align: center;
+}
+
+/* ==================== Detail Tabs (slider, visible on all screens) ==================== */
+.vx-sync-detail-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 8px 12px;
+    background: var(--vx-bg-secondary);
+    border-bottom: 1px solid var(--vx-border);
+    flex-shrink: 0;
+}
+
+.vx-sync-detail-tab {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 12px;
+    border: none;
+    background: transparent;
+    border-radius: var(--vx-radius);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--vx-text-secondary);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.vx-sync-detail-tab:hover {
+    color: var(--vx-text);
+}
+
+.vx-sync-detail-tab.active {
+    background: var(--vx-primary);
+    color: white;
+}
+
+.vx-sync-detail-tab iconpark-icon {
+    font-size: 16px;
+}
+
+.vx-sync-tab-count {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--vx-text-muted);
+    background: var(--vx-bg);
+    padding: 1px 6px;
+    border-radius: 8px;
+    line-height: 16px;
+    min-width: 16px;
+    text-align: center;
+}
+
+.vx-sync-detail-tab.active .vx-sync-tab-count {
+    background: rgba(255, 255, 255, 0.25);
+    color: white;
+}
+
+.vx-sync-drive-quota {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--vx-text-muted);
+    background: var(--vx-bg-secondary);
+    padding: 2px 8px;
+    border-radius: 10px;
+    line-height: 20px;
+}
+
+/* Activity List */
+.vx-sync-activity-list {
+    margin: 0 20px 20px;
+    padding: 16px;
+    background: var(--vx-surface);
+    border: 1px solid var(--vx-border);
+    border-radius: var(--vx-radius);
+    max-height: 200px;
+    overflow-y: auto;
+    min-width: 360px;
+    max-width: 520px;
+    width: 100%;
+}
+
+.vx-sync-activity-list h3 {
+    margin: 0 0 10px 0;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--vx-text);
+}
+
+.vx-sync-activity-items {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.vx-sync-activity-empty {
+    text-align: center;
+    padding: 16px 0;
+    font-size: 13px;
+    color: var(--vx-text-muted);
+}
+
+.vx-sync-activity-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: var(--vx-radius-sm);
+    font-size: 13px;
+    color: var(--vx-text-secondary);
+    transition: background 0.15s ease;
+}
+
+.vx-sync-activity-item:hover {
+    background: var(--vx-bg-secondary);
+}
+
+.vx-sync-activity-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+}
+
+.vx-sync-activity-desc {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--vx-text);
+}
+
+.vx-sync-activity-time {
+    font-size: 11px;
+    color: var(--vx-text-muted);
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+/* Transfer progress bar in activity list */
+.vx-sync-transfer-row .vx-list-filename {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+}
+
+.vx-sync-transfer-bar {
+    width: 100%;
+    height: 4px;
+    background: var(--vx-border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 2px;
+}
+
+.vx-sync-transfer-fill {
+    height: 100%;
+    background: var(--vx-accent, #2563eb);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+.vx-sync-transfer-info {
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+/* File tree container (vx-list-body) needs position:relative for drop hint */
+#sync-file-tree {
+    position: relative;
+}
+
+#sync-content-area.drag-over {
+    background: rgba(37, 99, 235, 0.05);
+}
+
+/* Drop Hint (shown during drag over) */
+.vx-sync-drop-hint {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: rgba(37, 99, 235, 0.08);
+    border: 2px dashed var(--vx-primary);
+    border-radius: var(--vx-radius);
+    z-index: 10;
+    pointer-events: none;
+}
+
+.vx-sync-drop-hint p {
+    margin: 0;
+    font-size: 16px;
+    color: var(--vx-primary);
+    font-weight: 500;
+}
+
+/* ==================== Mobile Responsive ==================== */
+@media (max-width: 768px) {
+    .vx-sync-drives-grid {
+        grid-template-columns: 1fr;
+        gap: 12px;
+        padding: 12px 16px;
+    }
+
+    .vx-sync-guide {
+        margin: 12px 16px 0;
+    }
+
+    .vx-sync-guide-header {
+        padding: 8px 12px;
+        font-size: 13px;
+    }
+
+    .vx-sync-guide-body {
+        padding: 0 12px 10px 12px;
+    }
+
+    .vx-sync-guide-steps li {
+        font-size: 12px;
+    }
+
+    .vx-sync-status-bar {
+        padding: 8px 16px;
+        font-size: 12px;
+        gap: 8px;
+    }
+
+    .vx-sync-lobby-body {
+        padding: 16px 12px;
+        gap: 12px;
+    }
+
+    .vx-sync-lobby-card {
+        flex-direction: column;
+        align-items: stretch;
+        max-width: 100%;
+        padding: 14px 16px;
+        gap: 12px;
+    }
+
+    .vx-sync-lobby-card-action {
+        width: 100%;
+    }
+
+    .vx-sync-lobby-card-action .vx-btn {
+        width: 100%;
+    }
+
+    .vx-sync-lobby-drive-meta {
+        font-size: 12px;
+    }
+
+    .vx-sync-lobby-meta-sep {
+        display: none;
+    }
+
+    .vx-sync-folder-path {
+        max-width: 100px;
+    }
+
+    .vx-sync-mode-badge {
+        font-size: 10px;
+        padding: 1px 6px;
+    }
+
+    .vx-sync-transfer-stats {
+        font-size: 10px;
+    }
+
+    /* Modal responsive */
+    .vx-sync-modal-body {
+        padding: 20px 16px;
+    }
+
+    .vx-sync-detail-tab {
+        padding: 8px 8px;
+        font-size: 12px;
+        gap: 4px;
+    }
+
+    .vx-sync-detail-tab iconpark-icon {
+        font-size: 14px;
+    }
+}
+
+@media (max-width: 480px) {
+    .vx-sync-drives-grid {
+        padding: 10px 12px;
+    }
+
+    .vx-sync-status-bar {
+        flex-wrap: wrap;
+        gap: 4px;
+        padding: 6px 12px;
+    }
+
+    .vx-sync-lobby-body {
+        padding: 16px 12px;
+    }
+
+    .vx-sync-detail-tabs {
+        padding: 6px 8px;
+        gap: 2px;
+    }
+}

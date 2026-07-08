@@ -127,7 +127,7 @@ function initAreaDetection() {
  * Handle redirect for China mainland users
  */
 function handleChinaMainlandRedirect() {
-    if (window.location.hostname !== 'www.ttttt.link' && window.location.hostname !== '127.0.0.1') {
+    if (window.location.hostname !== 'www.ttttt.link' && window.location.hostname !== '127.0.0.1' && window.location.hostname !== 'localhost') {
         const params = window.location.search || '';
         window.location.href = 'https://www.ttttt.link' + params;
     }

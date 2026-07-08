@@ -1,0 +1,460 @@
+<!-- Sync Drive Module Template -->
+
+<!-- Consent Modal (shown before first use) -->
+<div id="sync-consent-modal" class="vx-modal vx-sync-consent-modal">
+    <div class="vx-modal-overlay"></div>
+    <div class="vx-modal-container vx-modal-lg">
+        <div class="vx-modal-header">
+            <h3 data-tpl="sync_consent_title">欢迎使用同步盘 Beta</h3>
+        </div>
+        <div class="vx-modal-body vx-sync-consent-body">
+            <p class="vx-sync-consent-intro" data-tpl="sync_consent_intro">
+                同步盘允许您使用自己的设备作为服务器，提供文件同步服务；其它设备可加入成为子节点，与同步盘同步文件。简单来说就像百度网盘，不同的是容量不受限、速度不受限。
+            </p>
+
+            <div class="vx-sync-consent-section">
+                <h4 data-tpl="sync_consent_highlights_title">亮点功能</h4>
+                <ul class="vx-sync-consent-list">
+                    <li data-tpl="sync_consent_highlight_1">基于 P2P 模式传输数据，带宽不受限。</li>
+                    <li data-tpl="sync_consent_highlight_2">支持 Relay 模式传输数据，网络条件不受限。</li>
+                    <li data-tpl="sync_consent_highlight_3">使用您自己的设备来存储数据，安全可靠，容量不受限。</li>
+                </ul>
+            </div>
+
+            <div class="vx-sync-consent-section">
+                <h4 data-tpl="sync_consent_limits_title">局限性</h4>
+                <ul class="vx-sync-consent-list">
+                    <li data-tpl="sync_consent_limit_1">基于浏览器，文件同步速率可能不如传统需安装客户端的同步盘。</li>
+                    <li data-tpl="sync_consent_limit_2">不支持历史版本。</li>
+                    <li data-tpl="sync_consent_limit_3">目前尚未支持其它账号加入到同步盘（未来将会实现）。</li>
+                </ul>
+            </div>
+
+            <div class="vx-sync-consent-warning">
+                <iconpark-icon name="triangle-exclamation-solid"></iconpark-icon>
+                <div>
+                    <p data-tpl="sync_consent_warning_1">本功能目前属于测试版本，请勿用于同步重要数据！建议做好数据备份。</p>
+                    <p data-tpl="sync_consent_warning_2">同步功能可能导致数据出现异常，对此造成的问题概不负责！</p>
+                </div>
+            </div>
+        </div>
+        <div class="vx-modal-footer">
+            <button class="vx-btn vx-btn-secondary" onclick="VX_SYNC.declineConsent()" data-tpl="sync_consent_decline">暂不使用</button>
+            <button class="vx-btn vx-btn-primary" onclick="VX_SYNC.acceptConsent()" data-tpl="sync_consent_accept">同意并继续</button>
+        </div>
+    </div>
+</div>
+
+<!-- Global Loading Overlay -->
+<div id="sync-loading-overlay" class="vx-sync-loading-overlay" style="display:none">
+    <div class="vx-sync-loading-mask"></div>
+    <div class="vx-sync-loading-content">
+        <p id="sync-loading-text" class="vx-sync-loading-title" data-tpl="sync_loading">加载中...</p>
+        <div class="vx-sync-loading-bar">
+            <div class="vx-sync-loading-fill" id="sync-loading-fill"></div>
+        </div>
+        <p id="sync-loading-sub" class="vx-sync-loading-sub"></p>
+    </div>
+</div>
+
+<!-- Mobile Topbar -->
+<div class="vx-mob-topbar vx-sync-mob-topbar" id="sync-mob-topbar" style="display:none">
+    <div class="vx-mob-topbar-inner">
+        <div class="vx-mob-topbar-left">
+            <button type="button" class="vx-mob-topbar-btn vx-sync-mob-menu-btn" id="sync-mob-menu" onclick="VXUI.toggleSidebar()">
+                <iconpark-icon name="bars"></iconpark-icon>
+            </button>
+            <button type="button" class="vx-mob-topbar-btn vx-sync-mob-back-btn" id="sync-mob-back" onclick="VX_SYNC.leaveDrive()" style="display:none">
+                <iconpark-icon name="arrow-circle-left"></iconpark-icon>
+            </button>
+        </div>
+
+        <div class="vx-mob-topbar-title" id="sync-mob-title">
+            <iconpark-icon name="link-cloud"></iconpark-icon>
+            <span data-tpl="sync_title">文件同步盘</span>
+        </div>
+
+        <div class="vx-mob-topbar-right">
+        </div>
+    </div>
+</div>
+
+<div id="sync-container" class="vx-sync-container">
+    <!-- Sync Drive List View (shown when no drive is active) -->
+    <div id="sync-drive-list" class="vx-sync-view">
+        <header class="vx-header vx-header-minimal">
+            <div class="vx-header-left">
+                <button class="vx-btn-icon vx-portrait-sidebar-btn" onclick="VXUI.toggleSidebar()">
+                    <iconpark-icon name="bars"></iconpark-icon>
+                </button>
+                <nav class="vx-breadcrumb">
+                    <a href="javascript:;"><span data-tpl="sync_title">文件同步盘</span></a>
+                </nav>
+            </div>
+            <div class="vx-header-right">
+                <button class="vx-btn vx-btn-ghost vx-btn-sm" onclick="VX_SYNC.editDeviceName()" title="点击修改设备名称">
+                    <iconpark-icon name="computer" size="16"></iconpark-icon>
+                    <span class="vx-sync-device-chip-name">#1</span>
+                    <iconpark-icon name="pen-to-square" size="14" class="vx-sync-device-chip-edit"></iconpark-icon>
+                </button>
+                <button class="vx-btn vx-btn-ghost" onclick="VX_SYNC.loadDrives()" title="刷新">
+                    <iconpark-icon name="rotate" size="16"></iconpark-icon>
+                    <span data-tpl="sync_refresh">刷新</span>
+                </button>
+                <button class="vx-btn vx-btn-ghost" onclick="VX_SYNC.showCreateDrive()">
+                    <iconpark-icon name="circle-plus" size="16"></iconpark-icon>
+                    <span data-tpl="sync_create">创建同步盘</span>
+                </button>
+                <span id="sync-drive-quota" class="vx-sync-drive-quota" style="display:none"></span>
+            </div>
+        </header>
+
+        <div class="vx-content vx-content-list">
+            <!-- Usage Guide (collapsible) -->
+            <div class="vx-sync-guide" id="sync-guide">
+                <button class="vx-sync-guide-header" type="button" onclick="VX_SYNC.toggleGuide()">
+                    <iconpark-icon name="circle-info" size="18"></iconpark-icon>
+                    <span data-tpl="sync_guide_title">使用方法</span>
+                    <iconpark-icon name="arrow-turn-down-left" size="16" class="vx-sync-guide-arrow"></iconpark-icon>
+                </button>
+                <div class="vx-sync-guide-body" id="sync-guide-body">
+                    <ol class="vx-sync-guide-steps">
+                        <li>
+                            <strong data-tpl="sync_guide_step1_title">创建同步盘（服务器端）</strong>
+                            <span data-tpl="sync_guide_step1_desc">在要作为服务器的设备上打开浏览器并进入本页面，点击「创建同步盘」，该设备即以服务器身份创建同步盘。然后点击创建好的同步盘，选择一个文件夹作为同步盘目录，即完成创建。</span>
+                        </li>
+                        <li>
+                            <strong data-tpl="sync_guide_step2_title">加入同步盘（其它设备）</strong>
+                            <span data-tpl="sync_guide_step2_desc">在需要加入同步盘的其它设备上打开浏览器并进入本页面，点击已有的同步盘，选择一个文件夹，即可加入同步盘并自动同步数据。</span>
+                        </li>
+                    </ol>
+                </div>
+            </div>
+
+            <div class="vx-sync-drives-grid" id="sync-drives"></div>
+        </div>
+    </div>
+
+    <!-- Drive Lobby View (shown after selecting a drive, before P2P connection) -->
+    <div id="sync-drive-lobby" class="vx-sync-view" style="display:none">
+        <header class="vx-header vx-header-minimal">
+            <div class="vx-header-left">
+                <button class="vx-btn-icon vx-portrait-sidebar-btn" onclick="VXUI.toggleSidebar()">
+                    <iconpark-icon name="bars"></iconpark-icon>
+                </button>
+                <button class="vx-btn-icon vx-btn-outline" onclick="VX_SYNC.leaveDrive()">
+                    <iconpark-icon name="arrow-circle-left"></iconpark-icon>
+                </button>
+                <nav class="vx-breadcrumb">
+                    <a href="javascript:;" onclick="VX_SYNC.leaveDrive()"><span data-tpl="sync_title">文件同步盘</span></a>
+                    <span class="vx-breadcrumb-sep">/</span>
+                    <span id="sync-lobby-name"></span>
+                </nav>
+            </div>
+            <div class="vx-header-right">
+                <button class="vx-btn vx-btn-ghost vx-btn-sm" onclick="VX_SYNC.editDeviceName()" title="点击修改设备名称">
+                    <iconpark-icon name="computer" size="16"></iconpark-icon>
+                    <span class="vx-sync-device-chip-name">#1</span>
+                    <iconpark-icon name="pen-to-square" size="14" class="vx-sync-device-chip-edit"></iconpark-icon>
+                </button>
+                </div>
+        </header>
+
+        <div class="vx-content vx-content-list">
+            <div class="vx-sync-lobby-body">
+                <!-- Compact Setup Card -->
+                <div class="vx-sync-lobby-card">
+                    <!-- Drive info -->
+                    <div class="vx-sync-lobby-card-info">
+                        <iconpark-icon name="link-cloud" size="20"></iconpark-icon>
+                        <div class="vx-sync-lobby-drive-meta">
+                            <span id="sync-lobby-host-dot"></span>
+                            <strong id="sync-lobby-host-text"></strong>
+                            <span class="vx-sync-lobby-meta-sep">·</span>
+                            <iconpark-icon name="mobile-signal" size="13"></iconpark-icon>
+                            <strong id="sync-lobby-nodes"></strong>
+                            <span data-tpl="sync_lobby_nodes">节点</span>
+                        </div>
+                    </div>
+                    <!-- Action Button -->
+                    <div class="vx-sync-lobby-card-action">
+                        <button class="vx-btn vx-btn-primary" onclick="VX_SYNC.startServer()" id="sync-lobby-btn-server" style="display:none">
+                            <iconpark-icon name="server"></iconpark-icon>
+                            <span data-tpl="sync_start_server">启动服务器</span>
+                        </button>
+                        <button class="vx-btn vx-btn-primary" onclick="VX_SYNC.connectToHost()" id="sync-lobby-btn-connect" style="display:none">
+                            <iconpark-icon name="link"></iconpark-icon>
+                            <span data-tpl="sync_connect_host">连接到主机</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Offline Hint -->
+                <div class="vx-sync-lobby-hint" id="sync-lobby-hint-offline" style="display:none">
+                    <iconpark-icon name="wifi-exclamation"></iconpark-icon>
+                    <span data-tpl="sync_lobby_offline_hint">主机当前离线，请等待主机上线后再连接</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Drive Detail View (shown when P2P is active) -->
+    <div id="sync-drive-detail" class="vx-sync-view" style="display:none">
+        <!-- Desktop Header -->
+        <header class="vx-header vx-header-minimal">
+            <div class="vx-header-left">
+                <button class="vx-btn-icon vx-portrait-sidebar-btn" onclick="VXUI.toggleSidebar()">
+                    <iconpark-icon name="bars"></iconpark-icon>
+                </button>
+                <button class="vx-btn-icon vx-btn-outline" onclick="VX_SYNC.leaveDrive()">
+                    <iconpark-icon name="arrow-circle-left"></iconpark-icon>
+                </button>
+                <nav class="vx-breadcrumb" id="sync-path-breadcrumb">
+                    <a href="javascript:;" onclick="VX_SYNC.leaveDrive()"><span data-tpl="sync_title">文件同步盘</span></a>
+                    <span class="vx-breadcrumb-sep">/</span>
+                    <span id="sync-drive-name"></span>
+                </nav>
+            </div>
+            <div class="vx-header-right">
+                <button class="vx-btn vx-btn-ghost vx-btn-sm" onclick="VX_SYNC.editDeviceName()" title="点击修改设备名称">
+                    <iconpark-icon name="computer" size="16"></iconpark-icon>
+                    <span class="vx-sync-device-chip-name">#1</span>
+                    <iconpark-icon name="pen-to-square" size="14" class="vx-sync-device-chip-edit"></iconpark-icon>
+                </button>
+                </div>
+        </header>
+
+        <!-- Status Bar -->
+        <div class="vx-sync-status-bar" id="sync-status-bar">
+            <iconpark-icon name="link-cloud" size="14" id="sync-status-icon"></iconpark-icon>
+            <span class="vx-sync-status-text" id="sync-status-text" data-tpl="sync_status_idle">就绪</span>
+            <span class="vx-sync-status-sep" id="sync-btn-go-back-sep" style="display:none"></span>
+            <button class="vx-btn vx-btn-ghost vx-btn-sm" onclick="VX_SYNC.goBack()" id="sync-btn-go-back" style="display:none">
+                <iconpark-icon name="arrow-circle-left"></iconpark-icon>
+                <span data-tpl="sync_go_back">返回上级</span>
+            </button>
+            <span class="vx-sync-status-sep"></span>
+            <span class="vx-sync-folder-status">
+                <iconpark-icon name="folder-open" size="14"></iconpark-icon>
+                <span class="vx-sync-folder-path" id="sync-detail-folder-path" data-tpl="sync_no_folder_selected">未选择文件夹</span>
+            </span>
+            <span class="vx-sync-status-sep vx-hide-mobile"></span>
+            <span class="vx-sync-transfer-stats" id="sync-transfer-stats">
+                <span class="vx-sync-stats-item">
+                    <iconpark-icon name="cloud-arrow-up" size="14"></iconpark-icon>
+                    <span id="sync-stats-files">0</span>
+                </span>
+                <span class="vx-sync-stats-sep"></span>
+                <span class="vx-sync-stats-item">
+                    <iconpark-icon name="download" size="14"></iconpark-icon>
+                    <span id="sync-stats-data">0 B</span>
+                </span>
+            </span>
+        </div>
+
+        <!-- Tab Selector (slider to switch between lists) -->
+        <div class="vx-sync-detail-tabs" id="sync-detail-tabs">
+            <button class="vx-sync-detail-tab active" data-tab="files" onclick="VX_SYNC.switchDetailTab('files')">
+                <iconpark-icon name="folder-open"></iconpark-icon>
+                <span data-tpl="sync_tab_files">文件</span>
+            </button>
+            <button class="vx-sync-detail-tab" data-tab="peers" onclick="VX_SYNC.switchDetailTab('peers')">
+                <iconpark-icon name="user"></iconpark-icon>
+                <span data-tpl="sync_tab_peers">已连接</span>
+                <span id="sync-peer-count-text" class="vx-sync-tab-count"></span>
+            </button>
+            <button class="vx-sync-detail-tab" data-tab="activity" onclick="VX_SYNC.switchDetailTab('activity')">
+                <iconpark-icon name="rectangle-vertical-history"></iconpark-icon>
+                <span data-tpl="sync_tab_activity">活动</span>
+            </button>
+        </div>
+
+        <!-- Host Offline Overlay (within content) -->
+        <div class="vx-sync-offline-overlay" id="sync-host-offline" style="display:none">
+            <div class="vx-sync-offline-content">
+                <iconpark-icon name="wifi-exclamation" size="48"></iconpark-icon>
+                <h3 data-tpl="sync_host_offline_title">主机离线</h3>
+                <p data-tpl="sync_host_offline_desc">同步盘主机当前离线，所有同步功能已暂停。主机上线后将自动恢复。</p>
+            </div>
+        </div>
+
+        <!-- Detail Layout: single column, switch views by tab -->
+        <div class="vx-sync-detail-layout" id="sync-detail-layout" data-active="files">
+            <div class="vx-sync-main-content" id="sync-content-area">
+                <!-- File List View -->
+                <div class="vx-sync-list-view" id="sync-view-files">
+                    <div class="vx-list-container" id="sync-file-list">
+                        <div class="vx-list-header">
+                            <div class="vx-list-col vx-list-col-name">
+                                <span data-tpl="filename">文件名</span>
+                            </div>
+                            <div class="vx-list-col vx-list-col-size">
+                                <span data-tpl="filesize">大小</span>
+                            </div>
+                            <div class="vx-list-col vx-list-col-mtime vx-hide-mobile">
+                                <span data-tpl="filemtime">修改时间</span>
+                            </div>
+                            <div class="vx-list-col vx-list-col-status">
+                                <span data-tpl="filestatus">状态</span>
+                            </div>
+                        </div>
+                        <div class="vx-list-body" id="sync-file-tree">
+                            <div class="vx-sync-drop-hint" id="sync-drop-hint" style="display:none">
+                                <iconpark-icon name="cloud-arrow-up" size="48"></iconpark-icon>
+                                <p data-tpl="sync_drop_hint">释放文件以上传</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Empty State -->
+                    <div class="vx-empty" id="sync-empty-state" style="display:none">
+                        <div class="vx-empty-icon">
+                            <iconpark-icon name="folder-open-e1ad2j7l"></iconpark-icon>
+                        </div>
+                        <h3 class="vx-empty-title" data-tpl="sync_no_files">暂无文件</h3>
+                        <p class="vx-empty-text" data-tpl="sync_empty_hint">绑定文件夹后文件将自动同步，也可拖放文件手动上传</p>
+                    </div>
+                </div>
+
+                <!-- Peers List View -->
+                <div class="vx-sync-list-view" id="sync-view-peers" style="display:none">
+                    <div class="vx-list-container">
+                        <div class="vx-list-header">
+                            <div class="vx-list-col vx-list-col-name">
+                                <span data-tpl="sync_peer_id">节点</span>
+                            </div>
+                            <div class="vx-list-col vx-list-col-date">
+                                <span data-tpl="sync_peer_status">状态</span>
+                            </div>
+                        </div>
+                        <div class="vx-list-body" id="sync-peer-list">
+                            <div class="vx-sync-peer-empty" data-tpl="sync_no_peers">暂无已连接设备</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Activity List View -->
+                <div class="vx-sync-list-view" id="sync-view-activity" style="display:none">
+                    <div class="vx-list-container">
+                        <div class="vx-list-header">
+                            <div class="vx-list-col vx-list-col-name">
+                                <span data-tpl="sync_activity_desc">描述</span>
+                            </div>
+                            <div class="vx-list-col vx-list-col-date">
+                                <span data-tpl="sync_activity_time">时间</span>
+                            </div>
+                        </div>
+                        <div class="vx-list-body" id="sync-detail-activity-items">
+                            <div class="vx-sync-activity-empty" data-tpl="sync_no_activity">暂无活动</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create Drive Modal -->
+<div id="sync-create-modal" class="vx-modal vx-sync-create-modal">
+    <div class="vx-modal-overlay" onclick="VX_SYNC.hideCreateDrive()"></div>
+    <div class="vx-modal-container vx-modal-sm">
+        <div class="vx-modal-header">
+            <h3 data-tpl="sync_create_drive_title">创建同步盘</h3>
+        </div>
+
+        <!-- Create Form -->
+        <div class="vx-modal-body">
+            <div class="vx-sync-form-group">
+                <label data-tpl="sync_drive_name_label">同步盘名称</label>
+                <input type="text" id="sync-new-drive-name" class="vx-sync-input" placeholder="输入同步盘名称（可选）" />
+            </div>
+        </div>
+
+        <!-- Modal Footer -->
+        <div class="vx-modal-footer">
+            <button class="vx-btn vx-btn-secondary" onclick="VX_SYNC.hideCreateDrive()" data-tpl="btn_cancel">取消</button>
+            <button class="vx-btn vx-btn-primary" onclick="VX_SYNC.doCreateDrive()">
+                <iconpark-icon name="circle-plus"></iconpark-icon>
+                <span data-tpl="btn_create">创建</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Conflict Resolution Modal -->
+<div id="sync-conflict-modal" class="vx-modal">
+    <div class="vx-modal-overlay"></div>
+    <div class="vx-modal-container vx-modal-sm">
+        <div class="vx-modal-header">
+            <h3 data-tpl="sync_conflict_title">文件冲突</h3>
+        </div>
+        <div class="vx-modal-body" id="sync-conflict-body"></div>
+        <div class="vx-modal-footer">
+            <button class="vx-btn vx-btn-secondary" onclick="VX_SYNC.resolveConflict('local')" data-tpl="sync_keep_local">保留本地</button>
+            <button class="vx-btn vx-btn-primary" onclick="VX_SYNC.resolveConflict('remote')" data-tpl="sync_use_remote">使用远程</button>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Drive Confirmation Modal -->
+<div id="sync-delete-modal" class="vx-modal">
+    <div class="vx-modal-overlay" onclick="VX_SYNC.cancelDeleteDrive()"></div>
+    <div class="vx-modal-container vx-modal-sm">
+        <div class="vx-modal-header">
+            <h3 id="sync-delete-title" data-tpl="sync_delete_drive_title">删除同步盘</h3>
+        </div>
+        <div class="vx-modal-body">
+            <p id="sync-delete-message"></p>
+        </div>
+        <div class="vx-modal-footer">
+            <button class="vx-btn vx-btn-secondary" onclick="VX_SYNC.cancelDeleteDrive()" data-tpl="btn_cancel">取消</button>
+            <button class="vx-btn vx-btn-danger" onclick="VX_SYNC.confirmDeleteDrive()" id="sync-delete-confirm-btn">
+                <iconpark-icon name="trash"></iconpark-icon>
+                <span data-tpl="sync_delete_confirm">确认删除</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Device Name Setup Modal -->
+<div id="sync-device-name-modal" class="vx-modal">
+    <div class="vx-modal-overlay"></div>
+    <div class="vx-modal-container vx-modal-sm">
+        <div class="vx-modal-header">
+            <h3 data-tpl="sync_device_name_title">设置设备名称</h3>
+        </div>
+        <div class="vx-modal-body">
+            <p id="sync-device-name-hint" style="margin-bottom:12px;color:var(--vx-text-secondary);font-size:13px;"></p>
+            <input type="text" id="sync-device-name-input" class="vx-input" style="width:100%;padding:8px 12px;" placeholder="输入设备名称" maxlength="255" />
+        </div>
+        <div class="vx-modal-footer">
+            <button class="vx-btn vx-btn-secondary" onclick="VX_SYNC.cancelDeviceName()" data-tpl="btn_cancel">取消</button>
+            <button class="vx-btn vx-btn-primary" id="sync-device-name-save" data-tpl="btn_save">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- File Context Menu (using vx-context-menu pattern) -->
+<div id="sync-context-menu" class="vx-context-menu" style="display:none">
+    <div class="vx-context-item vx-ctx-open" onclick="VX_SYNC.ctxOpen()" style="display:none">
+        <iconpark-icon name="folder-open"></iconpark-icon>
+        <span data-tpl="sync_ctx_open">打开</span>
+    </div>
+    <div class="vx-context-item vx-ctx-download" onclick="VX_SYNC.ctxDownload()">
+        <iconpark-icon name="download"></iconpark-icon>
+        <span data-tpl="sync_ctx_download">下载</span>
+    </div>
+    <div class="vx-context-item" onclick="VX_SYNC.ctxRename()">
+        <iconpark-icon name="pencil"></iconpark-icon>
+        <span data-tpl="sync_ctx_rename">重命名</span>
+    </div>
+    <div class="vx-context-item" onclick="VX_SYNC.ctxShare()">
+        <iconpark-icon name="share-nodes"></iconpark-icon>
+        <span data-tpl="sync_ctx_share">分享</span>
+    </div>
+    <div class="vx-context-divider"></div>
+    <div class="vx-context-item vx-text-danger" onclick="VX_SYNC.ctxDelete()">
+        <iconpark-icon name="trash"></iconpark-icon>
+        <span data-tpl="sync_ctx_delete">删除</span>
+    </div>
+</div>

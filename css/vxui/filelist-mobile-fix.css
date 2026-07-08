@@ -483,7 +483,8 @@
     .vx-list-size {
         display: none !important; /* Hide size on mobile strictly */
     }
-    .vx-list-date.vx-hide-mobile {
+    .vx-list-date.vx-hide-mobile,
+    .vx-list-mtime {
         display: none !important;
     }
 

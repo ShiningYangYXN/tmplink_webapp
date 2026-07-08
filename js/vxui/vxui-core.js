@@ -555,25 +555,7 @@ class VXUICore {
             if (el) TL.tpl_lang(el);
         }
 
-        this.updateCommunityLinkVisibility();
-    }
-
-    updateCommunityLinkVisibility() {
-        const el = document.getElementById('vx-community-link');
-        if (!el) return;
-
-        const storedLang = localStorage.getItem('app_lang');
-        const settingLang = (typeof app !== 'undefined' && app && app.languageSetting)
-            ? app.languageSetting
-            : '';
-        const browserLang = (typeof navigator !== 'undefined' && (navigator.language || navigator.userLanguage))
-            ? (navigator.language || navigator.userLanguage)
-            : '';
-        const lang = String(storedLang || settingLang || browserLang || '').toLowerCase();
-        const shouldShow = lang === 'cn' || lang === 'hk' || lang.startsWith('zh');
-
-        el.style.display = shouldShow ? '' : 'none';
-    }
+        }
 
     /**
      * 设置语言（兼容旧版逻辑：优先走 TL.language -> app.languageSet）
@@ -744,12 +726,13 @@ class VXUICore {
         shop:     'nav_shop',
         points:   'vx_points_tab',
         profile:  'nav_info',
-        settings: 'nav_settings'
+        settings: 'nav_settings',
+        sync:     'nav_sync'
     };
 
     navigate(moduleName, params = {}) {
         // 未登录时仅允许文件夹浏览（filelist）；其余模块跳转登录
-        const restrictedModules = new Set(['direct', 'notes', 'ai', 'shop', 'points', 'profile', 'settings']);
+        const restrictedModules = new Set(['direct', 'notes', 'ai', 'shop', 'points', 'profile', 'settings', 'sync']);
         if (restrictedModules.has(moduleName) && !this.isLoggedIn()) {
             if (typeof this.toastWarning === 'function') {
                 const msg = (typeof app !== 'undefined' && app.languageData && app.languageData.vx_need_login)
