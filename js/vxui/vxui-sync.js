@@ -28,8 +28,7 @@ var VX_SYNC = VX_SYNC || {
     dataChannel: null,       // DataChannel (created by Host — legacy, kept for compat)
     acceptDC: null,          // DataChannel (accepted by Peer)
     _peerConnections: {},    // Host: peerDeviceId -> {pc, dc, mode, iceState, persistentId, displayName}
-    _hostConnectionMode: 'unknown', // Peer: connection mode to Host ('p2p'|'relay'|'unknown')
-    _relayMode: false,              // Start with P2P enabled. Fallback to relay on transfer failure.
+    _hostConnectionMode: 'unknown', // Peer: connection mode to Host ('p2p'|'wss_relay'|'unknown')
     
     // WebSocket signaling (single unified WSS connection, per-user)
     signalingWS: null,       // Unified WebSocket connection to sync_server (/ws)
@@ -46,7 +45,7 @@ var VX_SYNC = VX_SYNC || {
     _reconnectAttempt: 0,    // Reconnect attempt count
     _reconnectMax: 10,       // Max reconnect attempts
     _peerCons: {},           // uid -> {pc: RTCPeerConnection, dc: DataChannel}
-    _turnCredCache: null,    // {iceServers, expires} cached TURN credentials
+    _stunServersCache: null,  // {iceServers, expires} cached STUN server list
     _eligiblePeers: [],      // UIDs of eligible peers (latency < 100ms)
     _syncStatus: 'idle',     // 'idle' | 'ready' | 'syncing' | 'offline'
     _detailTab: 'files',     // 'files' | 'peers' | 'activity' - active tab in detail view
@@ -56,7 +55,9 @@ var VX_SYNC = VX_SYNC || {
     _activities: [],         // Activity log: [{type, desc, time, details}]
     _handleDb: null,         // IndexedDB connection for folder handle persistence
     _restorePromise: null,   // Promise for folder handle restoration
-    _connectionMode: 'p2p',  // 'p2p' - current connection mode
+    _connectionMode: 'p2p',  // 'p2p' | 'wss_relay' | 'connecting' - current transport mode
+    _relaySeq: 0,            // Monotonically increasing relay sequence number
+    _relayReceivedSeq: null, // Set of received relay seqs for dedup
     _transferStats: {        // Transfer statistics
         filesUploaded: 0,
         filesDownloaded: 0,
@@ -667,7 +668,7 @@ var VX_SYNC = VX_SYNC || {
     },
 
     // ========== P2P Control Message Relay (via API) ==========
-    // File chunks go through WebRTC DataChannel (P2P or TURN relay).
+    // File chunks go through WebRTC DataChannel (P2P or WSS relay).
     // All control messages (file lists, sync deltas, chunk metadata) go through sync_server API.
 
     _getPersistentDeviceId() {
@@ -1709,83 +1710,56 @@ var VX_SYNC = VX_SYNC || {
     },
     
     // ========== WebRTC P2P Setup ==========
-    async _fetchTurnCredentials() {
-        var cached = this._turnCredCache;
+    // STUN server list: Google public STUN + self-hosted STUN.
+    // The browser will automatically pick the fastest server.
+    _DEFAULT_STUN_SERVERS: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:sync.5t-cdn.com:3478' }
+    ],
+
+    async _fetchStunServers() {
+        var cached = this._stunServersCache;
         if (cached && Date.now() < cached.expires) {
-            // Pre-refresh: if remaining time < 5 min, silently fetch new
-            // credentials in the background so the next request is instant.
-            var remaining = cached.expires - Date.now();
-            if (remaining < 300000 && !this._turnCredRefreshing) {
-                this._turnCredRefreshing = true;
-                var self = this;
-                fetch(
-                    'https://sync.5t-cdn.com:8981/api/turn/credentials?token=' +
-                    encodeURIComponent(TL.api_token) +
-                    '&drive_id=' + encodeURIComponent(this.currentDrive.drive_id)
-                ).then(function(r) { return r.json(); }).then(function(data) {
-                    if (data.status === 1 && data.data) {
-                        var cred2 = { username: data.data.username, credential: data.data.password };
-                        var servers2 = data.data.uris.map(function(uri) {
-                            return { urls: uri, username: cred2.username, credential: cred2.credential };
-                        });
-                        self._turnCredCache = {
-                            iceServers: servers2,
-                            expires: Date.now() + 1500 * 1000
-                        };
-                        console.log('[SYNC] TURN credentials pre-refreshed');
-                    }
-                }).catch(function(e) {
-                    console.warn('[SYNC] TURN pre-refresh failed:', e);
-                }).finally(function() {
-                    self._turnCredRefreshing = false;
-                });
-            }
             return cached.iceServers;
         }
         try {
             var rsp = await fetch(
-                'https://sync.5t-cdn.com:8981/api/turn/credentials?token=' +
-                encodeURIComponent(TL.api_token) +
-                '&drive_id=' + encodeURIComponent(this.currentDrive.drive_id)
+                'https://sync.5t-cdn.com:8981/api/stun/servers'
             );
-            if (!rsp.ok) return [];
+            if (!rsp.ok) return this._DEFAULT_STUN_SERVERS;
             var data = await rsp.json();
-            if (data.status !== 1 || !data.data) return [];
+            if (data.status !== 1 || !data.data || !data.data.iceServers) {
+                return this._DEFAULT_STUN_SERVERS;
+            }
 
-            var cred = {
-                username: data.data.username,
-                credential: data.data.password
-            };
-            var servers = data.data.uris.map(function(uri) {
-                return { urls: uri, username: cred.username, credential: cred.credential };
-            });
-            console.log('[SYNC] TURN servers: ' + JSON.stringify(data.data.uris) + ' username=' + cred.username);
+            var servers = data.data.iceServers;
+            console.log('[SYNC] STUN servers: ' + JSON.stringify(servers));
 
-            this._turnCredCache = {
+            this._stunServersCache = {
                 iceServers: servers,
-                expires: Date.now() + 1500 * 1000 // 25 min (was 500s); JWT is 1800s
+                expires: Date.now() + 3600 * 1000 // 1 hour cache
             };
             return servers;
         } catch (e) {
-            console.warn('[SYNC] TURN credentials fetch failed:', e);
-            return [];
+            console.warn('[SYNC] STUN servers fetch failed, using defaults:', e.message || e);
+            return this._DEFAULT_STUN_SERVERS;
         }
     },
 
     _getIceServers() {
-        var cached = this._turnCredCache;
+        var cached = this._stunServersCache;
         if (cached && Date.now() < cached.expires) {
             return cached.iceServers;
         }
-        return [];
+        return this._DEFAULT_STUN_SERVERS;
     },
 
     async initWebRTC() {
         console.log('[SYNC] Initializing WebRTC, isHost=' + this.isHost);
         this._connState = 'connecting';
-        var iceServers = await this._fetchTurnCredentials();
-        var icePolicy = this._relayMode ? 'relay' : 'all';
-        console.log('[SYNC] ICE transport policy: ' + icePolicy + ' (TURN servers: ' + (iceServers ? iceServers.length : 0) + ')');
+        var iceServers = await this._fetchStunServers();
+        console.log('[SYNC] STUN servers: ' + (iceServers ? iceServers.length : 0) + ' configured');
 
         if (this.isHost) {
             // Host: per-peer architecture — no single RTCPeerConnection.
@@ -1803,13 +1777,12 @@ var VX_SYNC = VX_SYNC || {
     // 1. initWebRTC() (initial connection)
     // 2. scheduleReconnect() (ICE renegotiation after failure)
     async _createPeerConnection() {
-        var iceServers = await this._fetchTurnCredentials();
-        var icePolicy = this._relayMode ? 'relay' : 'all';
-        console.log('[SYNC] Creating new RTCPeerConnection: icePolicy=' + icePolicy + ' (TURN servers: ' + (iceServers ? iceServers.length : 0) + ')');
+        var iceServers = await this._fetchStunServers();
+        console.log('[SYNC] Creating new RTCPeerConnection (STUN servers: ' + (iceServers ? iceServers.length : 0) + ')');
 
         const config = {
             iceServers: iceServers,
-            iceTransportPolicy: icePolicy
+            iceTransportPolicy: 'all'
         };
         this.rtcPeerConnection = new RTCPeerConnection(config);
 
@@ -1817,10 +1790,6 @@ var VX_SYNC = VX_SYNC || {
             if (e.candidate) {
                 var parts = (e.candidate.candidate || '').split(' ');
                 var candType = parts.length > 7 ? parts[7] : 'unknown';
-                if (this._relayMode && candType !== 'relay') {
-                    // In relay-only mode, non-relay candidates should not appear.
-                    console.warn('[SYNC] Unexpected non-relay candidate in relay mode: type=' + candType);
-                }
                 console.log('[SYNC] ICE candidate gathered: type=' + candType + ' addr=' + (e.candidate.address || '?') + ' port=' + (e.candidate.port || '?'));
                 this.sendSignaling({
                     type: 'ice_candidate',
@@ -1869,37 +1838,19 @@ var VX_SYNC = VX_SYNC || {
             console.log('[SYNC] Connection state: ' + state);
 
             if (state === 'failed') {
-                console.warn('[SYNC] P2P connection failed, will reconnect');
+                console.warn('[SYNC] P2P connection failed, staying in relay mode');
                 this._connState = 'failed';
                 if (this._iceTimeout) {
                     clearTimeout(this._iceTimeout);
                     this._iceTimeout = null;
                 }
-                // Track consecutive failures by mode to detect stale
-                // credentials vs network issues.
-                if (this._relayMode) {
-                    this._relayFailCount = (this._relayFailCount || 0) + 1;
-                    // If relay fails 3+ times consecutively, the TURN
-                    // credential may have expired — clear cache to force
-                    // a fresh fetch on the next initWebRTC().
-                    if (this._relayFailCount >= 3) {
-                        console.warn('[SYNC] Relay failed ' + this._relayFailCount + ' times, clearing TURN credential cache');
-                        this._turnCredCache = null;
-                        this._relayFailCount = 0;
-                    }
-                } else {
-                    this._p2pFailCount = (this._p2pFailCount || 0) + 1;
-                }
-                this._relayMode = true; // Fallback to relay mode on connection failure
-                this.scheduleReconnect();
+                this._p2pFailCount = (this._p2pFailCount || 0) + 1;
+                this._switchToRelayMode();
             } else if (state === 'connected') {
-                // Reset failure counters on successful connection
                 this._p2pFailCount = 0;
-                this._relayFailCount = 0;
+                this._switchToP2PMode();
                 var hostName = this._getHostDisplayName();
-                var connLabel = this._relayMode
-                    ? '已通过中转连接到 ' + hostName
-                    : '已直接连接到 ' + hostName;
+                var connLabel = '已直接连接到 ' + hostName;
                 console.log('[SYNC] ' + connLabel + ' connection established');
                 if (this._iceTimeout) {
                     clearTimeout(this._iceTimeout);
@@ -1922,15 +1873,11 @@ var VX_SYNC = VX_SYNC || {
         };
     },
 
-    // Detect whether the current ICE connection is P2P (direct) or Relay (TURN).
-    // Calls callback with 'p2p', 'relay', or 'unknown'.
+    // Detect whether the current ICE connection is P2P (direct via STUN).
+    // No TURN relay, so the only possible candidate types are host, srflx, and prflx.
     _detectConnectionMode(pc, callback) {
         try {
             pc.getStats().then(function(report) {
-                var mode = 'unknown';
-                // Build a map of candidate IDs → candidate type for lookup.
-                // The candidate-pair stats reference local/remote candidates by ID,
-                // not by embedded objects, so we need to resolve them manually.
                 var candidateMap = {};
                 report.forEach(function(s) {
                     if (s.type === 'local-candidate' || s.type === 'remote-candidate') {
@@ -1938,32 +1885,27 @@ var VX_SYNC = VX_SYNC || {
                     }
                 });
 
+                var mode = 'unknown';
                 report.forEach(function(s) {
                     if (s.type === 'candidate-pair' && s.nominated) {
                         var localType = candidateMap[s.localCandidateId] || '';
                         var remoteType = candidateMap[s.remoteCandidateId] || '';
                         console.log('[SYNC] Active candidate pair: local=' + localType + ' remote=' + remoteType);
-                        if (localType === 'relay' || remoteType === 'relay') {
-                            mode = 'relay';
-                        } else if (localType && remoteType) {
+                        if (localType && remoteType) {
                             mode = 'p2p';
                         }
                     }
                 });
 
-                // In relay-only mode, always report 'relay' once connected.
-                // If we are connected but getStats() didn't find a nominated pair yet,
-                // default to 'p2p' (not in relay mode → must be direct).
                 if (mode === 'unknown') {
-                    mode = VX_SYNC._relayMode ? 'relay' : 'p2p';
+                    mode = 'p2p'; // Default: if connected, it's P2P
                 }
                 callback(mode);
             }).catch(function(e) {
-                // If stats are unavailable, default to the current mode.
-                callback(VX_SYNC._relayMode ? 'relay' : 'p2p');
+                callback('p2p');
             });
         } catch (e) {
-            callback(VX_SYNC._relayMode ? 'relay' : 'p2p');
+            callback('p2p');
         }
     },
 
@@ -2182,15 +2124,13 @@ var VX_SYNC = VX_SYNC || {
                         this.sendSignaling({ type: 'answer', sdp: this.rtcPeerConnection.localDescription });
                         var self = this;
                         if (this._iceTimeout) clearTimeout(this._iceTimeout);
-                        // Use longer timeout in relay mode — TURN TCP + TLS
-                        // handshake takes longer than direct P2P.
-                        var iceTimeoutMs = self._relayMode ? 25000 : 12000;
+                        var iceTimeoutMs = 15000;
                         this._iceTimeout = setTimeout(function() {
                             var iceState = self.rtcPeerConnection ? self.rtcPeerConnection.iceConnectionState : 'gone';
                             if (iceState !== 'connected' && iceState !== 'completed') {
-                                console.warn('[SYNC] ICE connection timeout (state=' + iceState + '), reconnecting');
+                                console.warn('[SYNC] ICE connection timeout (state=' + iceState + '), staying in relay mode');
                                 self._iceTimeout = null;
-                                self.scheduleReconnect();
+                                self._switchToRelayMode();
                             }
                         }, iceTimeoutMs);
                     })
@@ -2220,15 +2160,13 @@ var VX_SYNC = VX_SYNC || {
                         if (this._iceTimeout) {
                             clearTimeout(this._iceTimeout);
                             var iceSelf = this;
-                            // Use longer timeout in relay mode for the same reason
-                            // as the post-answer timeout above.
-                            var iceCandTimeoutMs = iceSelf._relayMode ? 30000 : 15000;
+                            var iceCandTimeoutMs = 15000;
                             this._iceTimeout = setTimeout(function() {
                                 var iceState = iceSelf.rtcPeerConnection ? iceSelf.rtcPeerConnection.iceConnectionState : 'gone';
                                 if (iceState !== 'connected' && iceState !== 'completed') {
-                                    console.warn('[SYNC] ICE connection timeout (state=' + iceState + '), reconnecting');
+                                    console.warn('[SYNC] ICE connection timeout (state=' + iceState + '), staying in relay mode');
                                     iceSelf._iceTimeout = null;
-                                    iceSelf.scheduleReconnect();
+                                    iceSelf._switchToRelayMode();
                                 }
                             }, iceCandTimeoutMs);
                         }
@@ -2314,11 +2252,11 @@ var VX_SYNC = VX_SYNC || {
         var iceServers = this._getIceServers();
         var self = this;
 
-        console.log('[SYNC] Host creating per-peer RTCPeerConnection for: ' + peerDeviceId);
+        console.log('[SYNC] Host creating per-peer RTCPeerConnection for: ' + peerDeviceId + ' (STUN servers: ' + (iceServers ? iceServers.length : 0) + ')');
 
         var pc = new RTCPeerConnection({
             iceServers: iceServers,
-            iceTransportPolicy: self._relayMode ? 'relay' : 'all'
+            iceTransportPolicy: 'all'
         });
 
         // Store peer connection state
@@ -3023,9 +2961,8 @@ var VX_SYNC = VX_SYNC || {
             console.log('[SYNC] uploadFileToHost complete: ' + file.name + ' chunks=' + totalChunks);
         } catch (e) {
             console.warn('[SYNC] uploadFileToHost failed for ' + meta.name + ':', e);
-            console.log('[SYNC] Switching to relay mode due to upload failure');
-            this._relayMode = true;
-            this.retryConnect();
+            console.log('[SYNC] Retrying connection after upload failure');
+            this.scheduleReconnect();
         }
     },
     
@@ -3085,10 +3022,9 @@ var VX_SYNC = VX_SYNC || {
                         console.warn('[SYNC] Pending downloads timeout, clearing ' + self._pendingDownloads.size + ' stale entries');
                         self._pendingDownloads.clear();
                         
-                        // Fallback to relay mode and restart connection
-                        console.log('[SYNC] Switching to relay mode due to transfer timeout');
-                        self._relayMode = true;
-                        self.retryConnect();
+                        // Retry after transfer timeout
+                        console.log('[SYNC] Retrying connection after transfer timeout');
+                        self.scheduleReconnect();
                         
                         self._schedulePeerReport();
                     }
@@ -3807,6 +3743,10 @@ var VX_SYNC = VX_SYNC || {
         await this.initWebRTC();
         this.hideLoading();
         
+        // Default to WSS relay mode; P2P probing runs in background
+        this._switchToRelayMode();
+        this._startP2PProbing();
+        
         this.addActivity('start_server', (this.currentDrive.name || this.currentDrive.drive_name || '同步盘'));
     },
 
@@ -3862,6 +3802,10 @@ var VX_SYNC = VX_SYNC || {
         this.currentPath = '/';
         this.showLoading('正在连接服务器...', '建立安全通道', 15);
         this.initWebRTC();
+
+        // Default to WSS relay mode; P2P probing runs in background
+        this._switchToRelayMode();
+        this._startP2PProbing();
 
         // Safety timeout: if file_list_resp is not received within 30s, hide loading
         // and surface an error so the user isn't stuck staring at the mask.
@@ -3963,9 +3907,15 @@ var VX_SYNC = VX_SYNC || {
                 await this.listFiles();
                 await this.initWebRTC();
                 this.hideLoading();
+                // Default to relay mode; P2P probing runs in background
+                this._switchToRelayMode();
+                this._startP2PProbing();
             } else {
                 // Peer: init WebRTC, loading hidden when file_list_resp received
                 await this.initWebRTC();
+                // Default to relay mode; P2P probing runs in background
+                this._switchToRelayMode();
+                this._startP2PProbing();
             }
         } else {
             console.warn('[SYNC] Retry connect: host still offline');
@@ -4041,6 +3991,8 @@ var VX_SYNC = VX_SYNC || {
                 if (!this.isHost && !isOnline) {
                     console.log('[SYNC] Host went offline via WS push, entering waiting state');
                     this._connState = 'disconnected';
+                    this._stopP2PProbing();
+                    this._connectionMode = 'wss_relay';
                     this._showHostOffline();
                     this.stopPeriodicSync();
                     // Close the old WebRTC connection so that when the Host comes
@@ -4155,7 +4107,7 @@ var VX_SYNC = VX_SYNC || {
         this._downloads.clear();
         this.peers = [];
         this._boundFolder = null;
-        this._connectionMode = 'p2p';
+        this._connectionMode = 'wss_relay';
         this._transferQueue = [];
         this._transferBusy = false;
         this._syncInProgress = false;
@@ -4248,6 +4200,11 @@ var VX_SYNC = VX_SYNC || {
             };
 
             this.signalingWS.onmessage = function(event) {
+                // Binary frames are relay data
+                if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
+                    self._handleRelayBinaryFrame(event.data);
+                    return;
+                }
                 try {
                     var msg = JSON.parse(event.data);
                     self._handleWSSMessage(msg);
@@ -4278,6 +4235,292 @@ var VX_SYNC = VX_SYNC || {
         } catch (e) {
             console.warn('[SYNC] WSS connect failed: ' + e.message);
         }
+    },
+
+    // ========== WSS Relay Data Transfer ==========
+    //
+    // Binary Frame Protocol:
+    //   [4B: drive_id_len] [drive_id] [4B: seq] [1B: payload_type_len] [payload_type] [payload]
+    // All integers are big-endian.
+
+    _encodeRelayFrame(driveId, payloadType, payload) {
+        var driveIdBytes = new TextEncoder().encode(driveId);
+        var payloadTypeBytes = new TextEncoder().encode(payloadType);
+        var payloadBytes = payload instanceof ArrayBuffer ? new Uint8Array(payload) : new Uint8Array(payload);
+
+        var totalLen = 4 + driveIdBytes.length + 4 + 1 + payloadTypeBytes.length + payloadBytes.length;
+        var buf = new ArrayBuffer(totalLen);
+        var view = new DataView(buf);
+        var pos = 0;
+
+        // drive_id_len (4 bytes, big-endian)
+        view.setUint32(pos, driveIdBytes.length, false); pos += 4;
+        // drive_id
+        new Uint8Array(buf).set(driveIdBytes, pos); pos += driveIdBytes.length;
+        // seq (4 bytes, big-endian)
+        this._relaySeq++;
+        view.setUint32(pos, this._relaySeq, false); pos += 4;
+        // payload_type_len (1 byte)
+        view.setUint8(pos, payloadTypeBytes.length); pos += 1;
+        // payload_type
+        new Uint8Array(buf).set(payloadTypeBytes, pos); pos += payloadTypeBytes.length;
+        // payload
+        new Uint8Array(buf).set(payloadBytes, pos);
+
+        return buf;
+    },
+
+    _decodeRelayFrame(data) {
+        var bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+        if (bytes.length < 9) return null;
+
+        var view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        var pos = 0;
+
+        // drive_id_len
+        var driveIdLen = view.getUint32(pos, false); pos += 4;
+        if (pos + driveIdLen > bytes.length) return null;
+        // drive_id
+        var driveId = new TextDecoder().decode(bytes.slice(pos, pos + driveIdLen)); pos += driveIdLen;
+        if (pos + 4 > bytes.length) return null;
+        // seq
+        var seq = view.getUint32(pos, false); pos += 4;
+        if (pos + 1 > bytes.length) return null;
+        // payload_type_len
+        var payloadTypeLen = view.getUint8(pos); pos += 1;
+        if (pos + payloadTypeLen > bytes.length) return null;
+        // payload_type
+        var payloadType = new TextDecoder().decode(bytes.slice(pos, pos + payloadTypeLen)); pos += payloadTypeLen;
+        // payload
+        var payload = bytes.slice(pos);
+
+        return { driveId: driveId, seq: seq, payloadType: payloadType, payload: payload };
+    },
+
+    _sendRelayFrame(payloadType, payload) {
+        if (!this.currentDrive) {
+            console.warn('[SYNC] _sendRelayFrame: no current drive');
+            return;
+        }
+        if (!this.signalingWS || this.signalingWS.readyState !== WebSocket.OPEN) {
+            console.warn('[SYNC] _sendRelayFrame: WSS not open');
+            return;
+        }
+        var frame = this._encodeRelayFrame(this.currentDrive.drive_id, payloadType, payload);
+        this.signalingWS.send(frame);
+    },
+
+    async _handleRelayBinaryFrame(data) {
+        var self = this;
+        // Convert Blob to ArrayBuffer if needed
+        var arrayBuf;
+        if (data instanceof Blob) {
+            arrayBuf = await data.arrayBuffer();
+        } else {
+            arrayBuf = data;
+        }
+
+        var frame = this._decodeRelayFrame(new Uint8Array(arrayBuf));
+        if (!frame) {
+            console.warn('[SYNC] Invalid relay frame received');
+            return;
+        }
+
+        // Dedup: skip already-received seq numbers
+        if (!this._relayReceivedSeq) this._relayReceivedSeq = new Set();
+        if (this._relayReceivedSeq.has(frame.seq)) {
+            console.log('[SYNC] Relay frame seq=' + frame.seq + ' already received, skipping');
+            return;
+        }
+        this._relayReceivedSeq.add(frame.seq);
+        // Keep the set from growing unbounded
+        if (this._relayReceivedSeq.size > 10000) {
+            this._relayReceivedSeq.clear();
+        }
+
+        console.log('[SYNC] Relay frame: seq=' + frame.seq + ' type=' + frame.payloadType + ' size=' + frame.payload.length);
+
+        switch (frame.payloadType) {
+            case 'file_chunk':
+                this._handleRelayFileChunk(frame);
+                break;
+            case 'control':
+                this._handleRelayControl(frame);
+                break;
+            default:
+                console.log('[SYNC] Unknown relay payload type: ' + frame.payloadType);
+        }
+    },
+
+    _handleRelayFileChunk(frame) {
+        // Relay file chunks are processed the same way as DataChannel chunks.
+        // The payload is a JSON-encoded chunk metadata that includes sha1, index, data, etc.
+        try {
+            var chunkMeta = JSON.parse(new TextDecoder().decode(frame.payload));
+            // Forward to the existing chunk processing logic
+            this._processFileChunk(chunkMeta, frame.payload);
+        } catch (e) {
+            console.warn('[SYNC] Failed to parse relay file chunk:', e);
+        }
+    },
+
+    _handleRelayControl(frame) {
+        try {
+            var ctrlMsg = JSON.parse(new TextDecoder().decode(frame.payload));
+            console.log('[SYNC] Relay control message:', ctrlMsg.type);
+            this.handleP2PMessage(ctrlMsg);
+        } catch (e) {
+            console.warn('[SYNC] Failed to parse relay control message:', e);
+        }
+    },
+
+    // ========== Connection Mode Management ==========
+
+    _switchToRelayMode() {
+        if (this._connectionMode === 'wss_relay') return;
+        console.log('[SYNC] Switching to WSS relay mode');
+        this._connectionMode = 'wss_relay';
+        this._connState = 'connected';
+        // Restart P2P probing to try to upgrade back to direct connection
+        this._startP2PProbing();
+    },
+
+    _switchToP2PMode() {
+        if (this._connectionMode === 'p2p') return;
+        console.log('[SYNC] Switching to P2P direct mode');
+        this._connectionMode = 'p2p';
+        this._stopP2PProbing();
+    },
+
+    _startP2PProbing() {
+        if (this._p2pProbeTimer) return;
+        var self = this;
+        console.log('[SYNC] Starting P2P probing (every 30s)');
+        this._p2pProbeTimer = setInterval(function() {
+            self._probeP2P();
+        }, 30000);
+    },
+
+    _stopP2PProbing() {
+        if (this._p2pProbeTimer) {
+            clearInterval(this._p2pProbeTimer);
+            this._p2pProbeTimer = null;
+            console.log('[SYNC] P2P probing stopped');
+        }
+    },
+
+    _probeP2P() {
+        if (this._connectionMode !== 'wss_relay') return;
+        console.log('[SYNC] Probing P2P connectivity...');
+        var self = this;
+
+        // Create a temporary RTCPeerConnection for probing
+        var iceServers = this._getIceServers();
+        var probePC = new RTCPeerConnection({
+            iceServers: iceServers,
+            iceTransportPolicy: 'all'
+        });
+
+        var probeTimeout = setTimeout(function() {
+            console.log('[SYNC] P2P probe timeout — staying in relay mode');
+            probePC.close();
+        }, 15000);
+
+        probePC.oniceconnectionstatechange = function() {
+            if (probePC.iceConnectionState === 'connected' || probePC.iceConnectionState === 'completed') {
+                clearTimeout(probeTimeout);
+                console.log('[SYNC] P2P probe succeeded — upgrading to direct mode');
+                probePC.close();
+                self._switchToP2PMode();
+                self.scheduleReconnect();
+            }
+        };
+
+        // Create a probe DataChannel and send offer via signaling
+        var dc = probePC.createDataChannel('p2p_probe');
+        probePC.createOffer().then(function(offer) {
+            return probePC.setLocalDescription(offer);
+        }).then(function() {
+            self.sendSignaling({
+                type: 'webrtc_offer',
+                sdp: probePC.localDescription,
+                to_device: '*',
+                probe: true
+            });
+        }).catch(function(e) {
+            console.warn('[SYNC] P2P probe offer failed:', e);
+            clearTimeout(probeTimeout);
+            probePC.close();
+        });
+
+        probePC.onicecandidate = function(e) {
+            if (e.candidate) {
+                self.sendSignaling({
+                    type: 'ice_candidate',
+                    candidate: e.candidate,
+                    to_device: '*',
+                    probe: true
+                });
+            }
+        };
+    },
+
+    // ========== Transport Abstraction Layer ==========
+    //
+    // Unified interface for sending data regardless of transport mode.
+
+    _transportSend(data, metadata) {
+        // Default to WSS relay; only use P2P DataChannel when explicitly in p2p mode
+        if (this._connectionMode === 'p2p') {
+            if (this.isHost) {
+                return this._sendViaP2P(data, metadata);
+            } else {
+                return this._sendViaP2PToHost(data, metadata);
+            }
+        } else {
+            return this._sendViaRelay(data, metadata);
+        }
+    },
+
+    _sendViaP2P(data, metadata) {
+        // Host: send to all peers or specific peer
+        var self = this;
+        if (metadata.target) {
+            var conn = this._peerConnections[metadata.target];
+            if (conn && conn.dc && conn.dc.readyState === 'open') {
+                conn.dc.send(data);
+                return Promise.resolve();
+            }
+        }
+        // Broadcast to all peers
+        var promises = [];
+        Object.keys(this._peerConnections).forEach(function(peerId) {
+            var conn = self._peerConnections[peerId];
+            if (conn && conn.dc && conn.dc.readyState === 'open') {
+                conn.dc.send(data);
+                promises.push(Promise.resolve());
+            }
+        });
+        return Promise.all(promises);
+    },
+
+    _sendViaP2PToHost(data, metadata) {
+        // Peer: send to host via DataChannel
+        if (this.rtcPeerConnection && this._dataChannel && this._dataChannel.readyState === 'open') {
+            this._dataChannel.send(data);
+            return Promise.resolve();
+        }
+        return Promise.reject(new Error('DataChannel not open'));
+    },
+
+    _sendViaRelay(data, metadata) {
+        var payloadType = metadata.type || 'file_chunk';
+        this._sendRelayFrame(payloadType, data);
+        return Promise.resolve();
+    },
+
+    getTransportMode() {
+        return this._connectionMode;
     },
 
     /**
@@ -4590,6 +4833,8 @@ var VX_SYNC = VX_SYNC || {
         this._pendingSignaling = null;
         // Reset connection state machine to initial disconnected state
         this._connState = 'disconnected';
+        this._stopP2PProbing();
+        this._connectionMode = 'wss_relay';
 
         // Send drive_leave to unregister from drive state on server.
         // The global signalingWS stays open — it's per-user, not per-drive.
@@ -4646,7 +4891,7 @@ var VX_SYNC = VX_SYNC || {
         this._downloads.clear();
         this.peers = [];
         this._boundFolder = null;
-        this._connectionMode = 'p2p';
+        this._connectionMode = 'wss_relay';
         this._transferStats = {
             filesUploaded: 0,
             filesDownloaded: 0,
@@ -4854,9 +5099,8 @@ var VX_SYNC = VX_SYNC || {
             }
         } catch (e) {
             console.error('[SYNC] Transfer failed for ' + (task.sha1 || (task.file && task.file.name)) + ': ', e);
-            console.log('[SYNC] Switching to relay mode due to transfer failure');
-            this._relayMode = true;
-            this.retryConnect();
+            console.log('[SYNC] Retrying connection after transfer failure');
+            this.scheduleReconnect();
         }
         // Process next after this one completes
         this._processNextTransfer();
@@ -6410,7 +6654,7 @@ var VX_SYNC = VX_SYNC || {
             
             var pc = new RTCPeerConnection({
                 iceServers: iceServers,
-                iceTransportPolicy: self._relayMode ? 'relay' : 'all'
+                iceTransportPolicy: 'all'
             });
             
             pc.onicecandidate = function(e) {
@@ -6560,7 +6804,7 @@ var VX_SYNC = VX_SYNC || {
         
         var pc = new RTCPeerConnection({
             iceServers: iceServers,
-            iceTransportPolicy: self._relayMode ? 'relay' : 'all'
+            iceTransportPolicy: 'all'
         });
         
         pc.onicecandidate = function(e) {
