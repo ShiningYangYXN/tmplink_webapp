@@ -40,9 +40,7 @@ var VX_SYNC = VX_SYNC || {
     
     // Transfer state
     pendingConflict: null,   // Current conflict being resolved
-    _currentDownload: null,  // Array of received chunks during download
-    _downloadMeta: null,     // {sha1, name, size, mtime} for current download
-    _downloadChunkSize: 0,   // Running total of received bytes for download
+    _downloads: new Map(),   // sha1 → {chunks, meta, chunkSize, dc} for concurrent per-peer downloads
     peers: [],               // Online peers in current drive
     _reconnectTimer: null,   // Reconnect timer
     _reconnectAttempt: 0,    // Reconnect attempt count
@@ -93,7 +91,6 @@ var VX_SYNC = VX_SYNC || {
     _transferLastBytes: 0,   // Bytes received/sent at last speed check
     _transferLastTime: 0,    // Timestamp of last speed check
     _transferSourceNode: '', // Display name of the node providing/receiving the file
-    _downloadPeerId: null,   // peerDeviceId of the Peer sending chunks (Host-side download)
 
     /**
      * WebRTC Connection State Machine
@@ -1097,7 +1094,7 @@ var VX_SYNC = VX_SYNC || {
             return;
         }
         // Skip if a transfer is still in progress (avoid triggering new delta mid-transfer)
-        if (this._transferBusy || (this._currentDownload && this._currentDownload.length > 0)) {
+        if (this._transferBusy || this._downloads.size > 0) {
             console.log('[SYNC] Skipping file report: transfer in progress');
             return;
         }
@@ -1628,7 +1625,7 @@ var VX_SYNC = VX_SYNC || {
                     if (hostHadPath[filePath]) {
                         // Host had this file before but not now → Host deleted it
                         // Peer should also delete (propagate deletion)
-                        deleteOnPeer.push({ path: filePath, name: pf.name, parent_path: pf.parent_path });
+                        deleteOnPeer.push({ path: filePath, name: pf.name, parent_path: pf.parent_path, sha1: pf.sha1 });
                     } else {
                         // Host never had this file → new file, Peer should upload
                         upload.push(pf);
@@ -2562,7 +2559,7 @@ var VX_SYNC = VX_SYNC || {
                 var msg = JSON.parse(e.data);
                 this.handleControlMessage(msg, peerDeviceId, dc);
             } else {
-                this.handleFileChunk(new Uint8Array(e.data));
+                this.handleFileChunk(new Uint8Array(e.data), dc);
             }
         };
         
@@ -2648,22 +2645,23 @@ var VX_SYNC = VX_SYNC || {
 
         switch (msg.t) {
             case 'file_upload_start':
-                this._currentDownload = [];
-                this._downloadMeta = msg.d;
-                this._downloadChunkSize = 0;
+                this._downloads.set(msg.d.sha1, {
+                    chunks: [],
+                    meta: msg.d,
+                    chunkSize: 0,
+                    dc: dc,
+                    peerDeviceId: peerDeviceId
+                });
                 this._currentTransferSha1 = msg.d.sha1;
                 this._fileStatus.set(msg.d.sha1, 'downloading');
                 this.showProgress(msg.d.name || msg.d.sha1, 0, msg.d.size);
-                // Init transfer speed tracking
                 this._transferStartTime = Date.now();
                 this._transferLastBytes = 0;
                 this._transferLastTime = Date.now();
                 this._transferSpeed = 0;
-                // Determine source node and transfer mode
                 var sourceNode = '';
                 var mode = this._hostConnectionMode || 'unknown';
                 if (this.isHost) {
-                    this._downloadPeerId = peerDeviceId;
                     sourceNode = (this._peerConnections[peerDeviceId] && this._peerConnections[peerDeviceId].displayName) || peerDeviceId || '';
                     mode = (this._peerConnections[peerDeviceId] && this._peerConnections[peerDeviceId].mode) || 'unknown';
                 } else {
@@ -2674,13 +2672,14 @@ var VX_SYNC = VX_SYNC || {
                 break;
 
             case 'file_upload_done':
-                if (this._currentDownload && this._currentDownload.length > 0) {
-                    var chunkCount = this._currentDownload.length;
-                    const blob = new Blob(this._currentDownload);
+                var dlSha1 = msg.d.sha1;
+                var download = this._downloads.get(dlSha1);
+                if (download && download.chunks.length > 0) {
+                    var chunkCount = download.chunks.length;
+                    const blob = new Blob(download.chunks);
                     var dlSize = blob.size;
-                    var dlMeta = this._downloadMeta || msg.d;
-                    var dlName = dlMeta.name || msg.d.sha1;
-                    var dlSha1 = dlMeta.sha1 || msg.d.sha1;
+                    var dlMeta = download.meta || msg.d;
+                    var dlName = dlMeta.name || dlSha1;
                     var dlSelf = this;
 
                     if (dlMeta.sync && this._boundFolder && this._boundFolder.handle) {
@@ -2690,12 +2689,9 @@ var VX_SYNC = VX_SYNC || {
                             if (ok) {
                                 console.log('[SYNC] Sync file written to local folder: ' + dlName);
                             }
-                            // Remove from pending downloads regardless of write success
-                            // (failed writes shouldn't block re-reporting forever)
                             if (dlSelf._pendingDownloads) {
                                 dlSelf._pendingDownloads.delete(dlSha1);
                                 console.log('[SYNC] Pending downloads remaining: ' + dlSelf._pendingDownloads.size);
-                                // All downloads complete — re-report so Host sees updated state
                                 if (dlSelf._pendingDownloads.size === 0) {
                                     console.log('[SYNC] All pending downloads complete, scheduling re-report');
                                     if (dlSelf._pendingDownloadTimeout) {
@@ -2726,13 +2722,9 @@ var VX_SYNC = VX_SYNC || {
 
                     this._transferStats.filesDownloaded++;
                     this._transferStats.bytesDownloaded += dlSize;
-                    this._currentDownload = null;
-                    this._downloadMeta = null;
-                    this._downloadChunkSize = 0;
-                    this._downloadPeerId = null;
+                    this._downloads.delete(dlSha1);
                     this.hideProgress();
                     this.updateTransferStats();
-                    // Remove the transfer progress row and add a regular activity
                     this._removeTransferActivity(dlSha1);
                     this.addActivity(dlMeta.sync ? 'sync_received' : 'download', dlName);
                     console.log('[SYNC] Download complete: ' + dlName + ' chunks=' + chunkCount + ' size=' + dlSize + ' sync=' + !!dlMeta.sync);
@@ -2749,31 +2741,39 @@ var VX_SYNC = VX_SYNC || {
         }
     },
     
-    handleFileChunk(data) {
-        if (!this._currentDownload) this._currentDownload = [];
-        this._currentDownload.push(new Uint8Array(data));
-        this._downloadChunkSize += data.byteLength || data.length;
-        if (this._downloadMeta && this._downloadMeta.size) {
-            this.updateProgress(this._downloadChunkSize, this._downloadMeta.size);
+    handleFileChunk(data, dc) {
+        var download = this._findDownloadByDC(dc);
+        if (!download) return;
+        download.chunks.push(new Uint8Array(data));
+        download.chunkSize += data.byteLength || data.length;
+        if (download.meta && download.meta.size) {
+            this.updateProgress(download.chunkSize, download.meta.size);
         }
-        // Calculate transfer speed every 5 chunks (throttled to avoid DOM thrashing)
-        if (this._currentDownload.length % 5 === 0) {
+        if (download.chunks.length % 5 === 0) {
             var now = Date.now();
             var elapsed = (now - this._transferLastTime) / 1000;
             if (elapsed > 0.5) {
-                var bytesDelta = this._downloadChunkSize - this._transferLastBytes;
+                var bytesDelta = download.chunkSize - this._transferLastBytes;
                 this._transferSpeed = bytesDelta / elapsed;
-                this._transferLastBytes = this._downloadChunkSize;
+                this._transferLastBytes = download.chunkSize;
                 this._transferLastTime = now;
-                var progress = this._downloadMeta && this._downloadMeta.size ? (this._downloadChunkSize / this._downloadMeta.size * 100) : 0;
-                var mode = this.isHost ? ((this._peerConnections[this._downloadPeerId] && this._peerConnections[this._downloadPeerId].mode) || 'unknown') : (this._hostConnectionMode || 'unknown');
-                var sourceNode = this.isHost ? ((this._peerConnections[this._downloadPeerId] && this._peerConnections[this._downloadPeerId].displayName) || '') : '\u4e3b\u673a';
-                this.upsertTransferActivity('download', this._downloadMeta.name || this._downloadMeta.sha1, this._downloadMeta.sha1, progress, this._formatSpeed(this._transferSpeed), mode, sourceNode);
+                var progress = download.meta && download.meta.size ? (download.chunkSize / download.meta.size * 100) : 0;
+                var mode = this.isHost ? ((this._peerConnections[download.peerDeviceId] && this._peerConnections[download.peerDeviceId].mode) || 'unknown') : (this._hostConnectionMode || 'unknown');
+                var sourceNode = this.isHost ? ((this._peerConnections[download.peerDeviceId] && this._peerConnections[download.peerDeviceId].displayName) || '') : '\u4e3b\u673a';
+                this.upsertTransferActivity('download', download.meta.name || download.meta.sha1, download.meta.sha1, progress, this._formatSpeed(this._transferSpeed), mode, sourceNode);
             }
         }
-        if (this._currentDownload.length % 20 === 0) {
-            console.log('[SYNC] Received ' + this._currentDownload.length + ' chunks so far, ' + this._downloadChunkSize + ' bytes');
+        if (download.chunks.length % 20 === 0) {
+            console.log('[SYNC] Received ' + download.chunks.length + ' chunks so far, ' + download.chunkSize + ' bytes');
         }
+    },
+
+    _findDownloadByDC(dc) {
+        var result = null;
+        this._downloads.forEach(function(d) {
+            if (d.dc === dc) result = d;
+        });
+        return result;
     },
     
     async uploadFile(file) {
@@ -4103,6 +4103,7 @@ var VX_SYNC = VX_SYNC || {
         this._fileStatus.clear();
         this._fileProgress.clear();
         this._currentTransferSha1 = null;
+        this._downloads.clear();
         this.peers = [];
         this._boundFolder = null;
         this._connectionMode = 'p2p';
@@ -4588,6 +4589,7 @@ var VX_SYNC = VX_SYNC || {
         this._fileStatus.clear();
         this._fileProgress.clear();
         this._currentTransferSha1 = null;
+        this._downloads.clear();
         this.peers = [];
         this._boundFolder = null;
         this._connectionMode = 'p2p';
@@ -6408,8 +6410,7 @@ var VX_SYNC = VX_SYNC || {
                     self.sendFileChunkToDC(dc, msg.d.sha1);
                 }
             } else {
-                if (!self._currentDownload) self._currentDownload = [];
-                self._currentDownload.push(new Uint8Array(e.data));
+                self.handleFileChunk(new Uint8Array(e.data), dc);
             }
         };
         
