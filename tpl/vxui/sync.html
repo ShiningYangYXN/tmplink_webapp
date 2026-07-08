@@ -236,6 +236,10 @@
             <span class="vx-sync-folder-status">
                 <iconpark-icon name="folder-open" size="14"></iconpark-icon>
                 <span class="vx-sync-folder-path" id="sync-detail-folder-path" data-tpl="sync_no_folder_selected">未选择文件夹</span>
+                <button type="button" class="vx-btn vx-btn-ghost vx-sync-change-folder-btn" onclick="VX_SYNC.changeBoundFolder()" title="" style="display:none;padding:2px 6px;gap:3px;font-size:12px;">
+                    <iconpark-icon name="pen-to-square" size="12"></iconpark-icon>
+                    <span data-tpl="sync_change_folder">更换</span>
+                </button>
             </span>
             <span class="vx-sync-status-sep vx-hide-mobile"></span>
             <span class="vx-sync-transfer-stats" id="sync-transfer-stats">

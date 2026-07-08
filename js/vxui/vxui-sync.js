@@ -5880,6 +5880,81 @@ var VX_SYNC = VX_SYNC || {
         }
     },
 
+    // Allow changing the bound folder while in an active drive (after P2P connection).
+    async changeBoundFolder() {
+        this.trackUI('sync_change_folder');
+
+        // If no folder currently bound, just use selectFolder directly
+        if (!this._boundFolder || !this._boundFolder.handle) {
+            await this.selectFolder();
+            return;
+        }
+
+        console.log('[SYNC] Changing bound folder...');
+
+        // Stop current FS observer to avoid leaking handles
+        this._stopFSObserver();
+
+        // Prompt user for new folder
+        try {
+            var dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+        } catch (e) {
+            if (e.name === 'AbortError') {
+                console.log('[SYNC] Folder change cancelled by user');
+            } else {
+                console.error('[SYNC] Folder selection error:', e);
+                this.toastError(this._t('sync_select_folder_failed'));
+            }
+            return;
+        }
+
+        // Update bound folder reference
+        this._boundFolder = {
+            name: dirHandle.name,
+            handle: dirHandle
+        };
+        console.log('[SYNC] Folder changed to: ' + dirHandle.name);
+
+        // Save new binding to IndexedDB
+        if (this.currentDrive && this.currentDrive.drive_id) {
+            await this._saveFolderHandle(dirHandle, this.currentDrive.drive_id);
+        }
+
+        // Update UI and activity log
+        this._updateFolderPathDisplay();
+        this.addActivity('change_folder', dirHandle.name);
+        this.toastSuccess(this._t('sync_folder_bound').replace('{name}', dirHandle.name));
+
+        // Load persisted sync state from .tmpsync/state.json in new folder
+        await this._loadSyncState();
+
+        // Phase 2 (A): start FS observer on new folder
+        this._startFSObserver();
+
+        // Trigger bidirectional sync if DataChannel is already open
+        if (!this.isHost) {
+            var dc = this.acceptDC;
+            if (dc && dc.readyState === 'open') {
+                console.log('[SYNC] Peer folder changed after DC open, sending file report');
+                this.sendPeerFileReport();
+            }
+        } else {
+            // Host: re-list files and send to all connected Peers, then request fresh peer_file_report
+            var hostSelf = this;
+            var hasOpenPeer = Object.keys(this._peerConnections).some(function(pid) {
+                var pdc = VX_SYNC._peerConnections[pid].dc;
+                return pdc && pdc.readyState === 'open';
+            });
+            if (hasOpenPeer) {
+                this._listDirectoryAt(this.currentPath).then(function(files) {
+                    hostSelf.sendToAllPeers('file_list_resp', { files: files, path: hostSelf.currentPath });
+                });
+                // Request Peer to re-send its file report for delta calculation
+                this.sendToAllPeers('file_report_req', {});
+            }
+        }
+    },
+
     getBoundFolderFiles() {
         if (!this._boundFolder || !this._boundFolder.handle) return [];
         var self = this;
