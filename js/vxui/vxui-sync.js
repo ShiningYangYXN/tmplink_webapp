@@ -3154,7 +3154,12 @@ var VX_SYNC = VX_SYNC || {
         var driveCount = this.drives.length;
         var driveLimit = this._getDriveLimit();
         if (quotaEl) {
-            quotaEl.textContent = driveCount + '/' + driveLimit;
+            var totalPeers = 0;
+            for (var i = 0; i < this.drives.length; i++) {
+                totalPeers += (this.drives[i].peer_count || 0);
+            }
+            var peerLimit = this._getPeerLimit();
+            quotaEl.innerHTML = '<span class="vx-sync-quota-row"><span class="vx-sync-quota-label">' + (typeof TL !== 'undefined' && TL.tpl_lang ? '' : '') + this._t('sync_quota_drives_label') + '</span><span class="vx-sync-quota-value">' + driveCount + '/' + driveLimit + '</span></span><span class="vx-sync-quota-row"><span class="vx-sync-quota-label">' + this._t('sync_quota_peers_label') + '</span><span class="vx-sync-quota-value">' + totalPeers + '/' + peerLimit + '</span></span>';
             quotaEl.style.display = '';
         }
         // Disable create button when limit reached
