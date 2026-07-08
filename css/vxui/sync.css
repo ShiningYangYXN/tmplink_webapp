@@ -494,6 +494,20 @@
     white-space: nowrap;
 }
 
+.vx-sync-change-folder-btn {
+    flex-shrink: 0;
+    color: var(--vx-text-muted);
+    border-radius: 4px;
+    transition: color 0.15s ease, background 0.15s ease;
+    border: 1px solid transparent;
+}
+
+.vx-sync-change-folder-btn:hover {
+    color: var(--vx-primary);
+    background: rgba(37, 99, 235, 0.08);
+    border-color: rgba(37, 99, 235, 0.15);
+}
+
 /* Connection Mode Badge */
 .vx-sync-mode-badge {
     display: inline-flex;

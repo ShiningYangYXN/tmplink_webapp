@@ -1372,6 +1372,7 @@
     "sync_link_copied": "Sync drive link copied",
     "sync_folder_bound": "Folder bound: {name}",
     "sync_select_folder_failed": "Failed to select folder",
+    "sync_change_folder": "Change",
     "sync_device_name_empty": "Device name cannot be empty",
     "sync_device_name_set": "Device name set to: {name}",
     "sync_save_failed": "Save failed, please retry",
