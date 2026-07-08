@@ -153,6 +153,7 @@ var VX_SYNC = VX_SYNC || {
 
     // User accepted the consent — persist and finish initializing the module.
     acceptConsent() {
+        this.trackUI('sync_consent_accept');
         try {
             localStorage.setItem('vx_sync_consent_accepted', '1');
         } catch (e) {
@@ -315,6 +316,7 @@ var VX_SYNC = VX_SYNC || {
 
     // Public: open the device name editor (can be called from UI button)
     editDeviceName() {
+        this.trackUI('sync_edit_device_name');
         this._showDeviceNamePrompt();
     },
 
@@ -896,6 +898,7 @@ var VX_SYNC = VX_SYNC || {
     },
     
     async loadDrives() {
+        this.trackUI('sync_load_drives');
         if (!TL.api_token) {
             console.warn('[SYNC] loadDrives skipped: no api_token');
             this._drivesLoaded = true;
@@ -921,6 +924,7 @@ var VX_SYNC = VX_SYNC || {
     },
     
     async createDrive(name) {
+        this.trackUI('sync_create_drive');
         console.log('[SYNC] Creating drive: name="' + (name || '(default)') + '"');
         const rsp = await this._post('drive_create', {
             drive_name: name || '',
@@ -968,6 +972,7 @@ var VX_SYNC = VX_SYNC || {
             return;
         }
         
+        this.trackUI('sync_join_drive');
         console.log('[SYNC] Joining drive with key: ' + (driveKey ? driveKey.substring(0, 8) + '...' : 'empty'));
         this.showLoading('正在加入同步盘...');
         const rsp = await this._post('drive_join', {
@@ -3523,6 +3528,7 @@ var VX_SYNC = VX_SYNC || {
     // ========== UI Actions ==========
     // Toggle the usage guide card. Collapse state persists in localStorage.
     toggleGuide() {
+        this.trackUI('sync_toggle_guide');
         var guide = document.getElementById('sync-guide');
         if (!guide) return;
         var collapsed = guide.classList.toggle('vx-sync-guide-collapsed');
@@ -3545,6 +3551,7 @@ var VX_SYNC = VX_SYNC || {
     },
 
     showCreateDrive() {
+        this.trackUI('sync_show_create');
         var nameInput = document.getElementById('sync-new-drive-name');
         if (nameInput) nameInput.value = '';
         VXUI.openModal('sync-create-modal');
@@ -3582,6 +3589,7 @@ var VX_SYNC = VX_SYNC || {
             return;
         }
 
+        this.trackUI('sync_enter_drive');
         console.log('[SYNC] Entering drive: id=' + driveId + ' name=' + (drive.name || drive.drive_name || '(unnamed)') + ' host_device=' + (drive.host_device_id || 'none') + ' my_device=' + this.getDeviceId());
         this.showLoading('正在加载同步盘信息...');
 
@@ -3702,6 +3710,7 @@ var VX_SYNC = VX_SYNC || {
 
     async startServer() {
         if (!this.currentDrive || !this.isHost) return;
+        this.trackUI('sync_start_server');
 
         // If no folder bound, prompt user to select one first
         if (!this._boundFolder || !this._boundFolder.handle) {
@@ -3749,6 +3758,7 @@ var VX_SYNC = VX_SYNC || {
 
     async connectToHost() {
         if (!this.currentDrive || this.isHost) return;
+        this.trackUI('sync_connect_host');
         if (!this._hostOnline) {
             this.toastWarning(this._t('sync_host_offline_cannot_connect'));
             return;
@@ -3841,6 +3851,7 @@ var VX_SYNC = VX_SYNC || {
     },
 
     switchDetailTab(tab) {
+        this.trackUI('sync_tab_' + tab);
         this._detailTab = tab;
         var layout = document.getElementById('sync-detail-layout');
         if (layout) layout.setAttribute('data-active', tab);
@@ -4554,6 +4565,7 @@ var VX_SYNC = VX_SYNC || {
     },
 
     leaveDrive() {
+        this.trackUI('sync_leave_drive');
         console.log('[SYNC] Leaving drive: ' + (this.currentDrive ? this.currentDrive.drive_id : 'none'));
         // Persist sync state so next session resumes correctly
         this._saveSyncState();
@@ -4634,6 +4646,9 @@ var VX_SYNC = VX_SYNC || {
     async confirmDeleteDrive() {
         if (!this._pendingDeleteDrive) return;
         var driveId = this._pendingDeleteDrive;
+        var drive = this.drives.find(function(r) { return r.drive_id === driveId; });
+        var isHost = drive && drive.host_device_id && drive.host_device_id === this.getDeviceId();
+        this.trackUI(isHost ? 'sync_delete_drive' : 'sync_leave_drive_list');
         this._pendingDeleteDrive = null;
         VXUI.closeModal('sync-delete-modal');
 
@@ -4678,12 +4693,14 @@ var VX_SYNC = VX_SYNC || {
 
     uploadFiles() {
         if (!this._isHostAlive()) return;
+        this.trackUI('sync_upload_files');
         const input = document.getElementById('sync-file-input');
         if (input) input.click();
     },
     
     handleFileSelect(event) {
         if (!this._isHostAlive()) return;
+        this.trackUI('sync_file_select');
         const files = event.target.files;
         if (!files || files.length === 0) return;
         
@@ -4694,6 +4711,7 @@ var VX_SYNC = VX_SYNC || {
     },
     
     async downloadFile(sha1) {
+        this.trackUI('sync_download_file');
         if (this.isHost) {
             // Host: read directly from bound folder
             var file = await this.getFileFromFileSystem(sha1);
@@ -5015,6 +5033,7 @@ var VX_SYNC = VX_SYNC || {
     
     async deleteFile(sha1) {
         if (!this._isHostAlive()) return;
+        this.trackUI('sync_delete_file');
         var self = this;
         var file = this.fileCache.get(sha1);
         var fileName = file ? file.name : sha1;
@@ -5039,6 +5058,7 @@ var VX_SYNC = VX_SYNC || {
     
     async createFolder(name) {
         if (!this._isHostAlive()) return;
+        this.trackUI('sync_create_folder');
         var self = this;
         var parentPath = this.currentPath;
         console.log('[SYNC] Creating folder: ' + name + ' in drive=' + this.currentDrive.drive_id + ' path=' + parentPath);
@@ -5066,6 +5086,7 @@ var VX_SYNC = VX_SYNC || {
     
     async renameFile(sha1, newName) {
         if (!this._isHostAlive()) return;
+        this.trackUI('sync_rename_file');
         var self = this;
         var file = this.fileCache.get(sha1);
         if (!file) return;
@@ -5110,6 +5131,7 @@ var VX_SYNC = VX_SYNC || {
 
     async moveFile(sha1, newParentPath) {
         if (!this._isHostAlive()) return;
+        this.trackUI('sync_move_file');
         var self = this;
         var file = this.fileCache.get(sha1);
         if (!file) return;
@@ -5378,6 +5400,7 @@ var VX_SYNC = VX_SYNC || {
 
     ctxShare() {
         if (!this._ctxTarget) return;
+        this.trackUI('sync_share_link');
         this.hideContextMenu();
         var link = window.location.origin + '/vx?module=sync&drive=' +
             (this.currentDrive ? this.currentDrive.drive_id : '');
@@ -5397,6 +5420,7 @@ var VX_SYNC = VX_SYNC || {
 
     // ========== Folder Navigation ==========
     openFolder(sha1, name) {
+        this.trackUI('sync_open_folder');
         var newPath;
         if (this.currentPath === '/') {
             newPath = '/' + name;
@@ -5415,6 +5439,7 @@ var VX_SYNC = VX_SYNC || {
 
     goBack() {
         if (this.currentPath === '/' || !this.currentPath) return;
+        this.trackUI('sync_go_back');
         var parts = this.currentPath.split('/').filter(function(p) { return p; });
         parts.pop();
         var parentPath = parts.length === 0 ? '/' : '/' + parts.join('/');
@@ -5462,6 +5487,7 @@ var VX_SYNC = VX_SYNC || {
 
     // ========== Folder Binding ==========
     async selectFolder() {
+        this.trackUI('sync_select_folder');
         console.log('[SYNC] Opening folder picker...');
         try {
             var dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
@@ -5946,6 +5972,22 @@ var VX_SYNC = VX_SYNC || {
     },
 
     // ========== Activity Tracking ==========
+
+    /**
+     * 记录 UI 行为（event_ui）
+     * @param {string} title
+     */
+    trackUI(title) {
+        try {
+            if (!title) return;
+            if (typeof TL !== 'undefined' && TL && typeof TL.ga === 'function') {
+                TL.ga(title);
+            }
+        } catch (e) {
+            // ignore
+        }
+    },
+
     addActivity(type, desc, details) {
         var activity = {
             type: type,
