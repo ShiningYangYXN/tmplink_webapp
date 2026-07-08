@@ -157,6 +157,8 @@ body.sponsor-mode .vx-btn-icon:hover {
     color: var(--sponsor-gold-strong);
 }
 
+/* Device name button: inherits ghost button sponsor styles (no extra overrides needed) */
+
 /* Desktop view toggle container & active state */
 body.sponsor-mode .vx-view-toggle,
 body.sponsor-mode .vx-album-controls,

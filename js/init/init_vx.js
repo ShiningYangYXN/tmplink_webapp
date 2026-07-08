@@ -71,6 +71,11 @@
         if (typeof VX_AI !== 'undefined') {
             VXUI.registerModule('ai', VX_AI);
         }
+
+        // 同步盘模块
+        if (typeof VX_SYNC !== 'undefined') {
+            VXUI.registerModule('sync', VX_SYNC);
+        }
     }
 
     // 初始化 VXUI

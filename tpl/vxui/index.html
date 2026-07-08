@@ -55,6 +55,10 @@
                             <iconpark-icon name="user-robot"></iconpark-icon>
                             <span class="vx-nav-item-text" data-tpl="nav_ai">助手</span>
                         </a>
+                        <a href="javascript:;" class="vx-nav-item" data-module="sync" data-auth="logged-in" onclick="VXUI.navigate('sync')">
+                            <iconpark-icon name="link-cloud"></iconpark-icon>
+                            <span class="vx-nav-item-text" data-tpl="nav_sync">同步盘</span>
+                        </a>
                         <a href="/?tmpui_page=/login" class="vx-nav-item" data-auth="logged-out">
                             <iconpark-icon name="user"></iconpark-icon>
                             <span class="vx-nav-item-text" data-tpl="navbar_login">登录</span>
@@ -123,11 +127,6 @@
                         <div class="vx-lang-option" data-action="vx-lang-set" data-lang="jp">日本語</div>
                     </div>
                 </div>
-
-                <a href="https://bbs.tmp.link" class="vx-nav-item" id="vx-community-link" target="_blank" rel="noopener" style="display: none;">
-                    <iconpark-icon name="comments"></iconpark-icon>
-                    <span class="vx-nav-item-text" data-tpl="vx_community_link">交流社区</span>
-                </a>
 
                 <a href="javascript:;" class="vx-nav-item" data-auth="logged-in" onclick="if(typeof TL !== 'undefined') TL.logout();">
                     <iconpark-icon name="right-from-bracket"></iconpark-icon>
@@ -290,6 +289,10 @@
         <button class="vx-mobile-btn" data-module="direct" data-auth="logged-in" onclick="VXUI.navigate('direct')">
             <iconpark-icon name="link"></iconpark-icon>
             <span data-tpl="nav_direct">直链</span>
+        </button>
+        <button class="vx-mobile-btn" data-module="sync" data-auth="logged-in" onclick="VXUI.navigate('sync')">
+            <iconpark-icon name="link-cloud"></iconpark-icon>
+            <span data-tpl="nav_sync">同步盘</span>
         </button>
     </div>
 </div>
