@@ -97,18 +97,17 @@
                     <span class="vx-sync-device-chip-name">#1</span>
                     <iconpark-icon name="pen-to-square" size="14" class="vx-sync-device-chip-edit"></iconpark-icon>
                 </button>
-                <button class="vx-btn vx-btn-ghost" onclick="VX_SYNC.loadDrives()" title="刷新">
+                <button class="vx-btn vx-btn-ghost vx-btn-sm" onclick="VX_SYNC.loadDrives()" title="刷新">
                     <iconpark-icon name="rotate" size="16"></iconpark-icon>
                     <span data-tpl="sync_refresh">刷新</span>
                 </button>
-                <button class="vx-btn vx-btn-ghost" onclick="VX_SYNC.showCreateDrive()">
+                <button class="vx-btn vx-btn-ghost vx-btn-sm" onclick="VX_SYNC.showCreateDrive()">
                     <iconpark-icon name="circle-plus" size="16"></iconpark-icon>
                     <span data-tpl="sync_create">创建同步盘</span>
                 </button>
                 <span id="sync-drive-quota" class="vx-sync-drive-quota" style="display:none"></span>
             </div>
         </header>
-
         <div class="vx-content vx-content-list">
             <!-- Usage Guide (collapsible) -->
             <div class="vx-sync-guide" id="sync-guide">

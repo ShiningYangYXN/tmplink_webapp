@@ -1053,9 +1053,25 @@ html.vx-dark .vx-sync-role-badge.role-peer {
     font-weight: 500;
     color: var(--vx-text-muted);
     background: var(--vx-bg-secondary);
-    padding: 2px 8px;
+    padding: 4px 10px;
     border-radius: 10px;
-    line-height: 20px;
+    line-height: 1.5;
+}
+
+.vx-sync-quota-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.vx-sync-quota-label {
+    color: var(--vx-text-secondary);
+    white-space: nowrap;
+}
+
+.vx-sync-quota-value {
+    font-weight: 600;
+    color: var(--vx-text-primary);
 }
 
 /* Activity List */

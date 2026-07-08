@@ -1355,6 +1355,8 @@
     "sync_join_failed": "Failed to join sync drive",
     "sync_drive_limit_reached": "Sync drive limit reached (max {max}). Become a sponsor to create more.",
     "sync_device_limit_reached": "Device limit reached (max {max}). This drive cannot accept more devices.",
+    "sync_quota_drives_label": "Drives",
+    "sync_quota_peers_label": "Clients",
     "sync_password_required": "Please enter the sync drive password",
     "sync_connection_lost_refresh": "Connection lost, please refresh the page",
     "sync_host_offline_cannot_connect": "Host is offline, cannot connect right now",
