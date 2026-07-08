@@ -133,11 +133,6 @@
         <div class="vx-stats-grid">
             <div class="vx-stat-card">
                 <div class="vx-stat-icon">
-                    <iconpark-icon name="gauge-circle-bolt"></iconpark-icon>
-                </div>
-                <div class="vx-stat-content">
-            <div class="vx-stat-card">
-                <div class="vx-stat-icon">
                     <img src="/img/level/check.svg" width="24" alt="">
                 </div>
                 <div class="vx-stat-content">
@@ -243,6 +238,16 @@
                 <div class="vx-stat-content">
                     <div class="vx-stat-label" data-tpl="vx_profile_points">点数余额</div>
                     <div class="vx-stat-value" id="vx-stat-points">--</div>
+                </div>
+            </div>
+
+            <div class="vx-stat-card vx-stat-card-action" onclick="VXUI.navigate('sync')">
+                <div class="vx-stat-icon">
+                    <iconpark-icon name="arrows-rotate"></iconpark-icon>
+                </div>
+                <div class="vx-stat-content">
+                    <div class="vx-stat-label" data-tpl="nav_sync">同步盘</div>
+                    <div class="vx-stat-value" id="vx-stat-sync">--</div>
                 </div>
             </div>
 
