@@ -132,10 +132,241 @@ var VX_SYNC = VX_SYNC || {
     _currentTransferSha1: null, // sha1 of file currently being transferred
     _localFiles: [],          // Peer: local bound-folder files at currentPath [{name,size,mtime,is_dir,parent_path,sha1}]
 
+    // ========== DriveSession ==========
+    // 创建一个独立的 DriveSession 状态对象。
+    // 所有原 this.xxx 单 drive 字段迁移到 session 内，实现多盘并行。
+    _createDriveSession(drive, role) {
+        return {
+            drive_id: drive.drive_id,
+            drive: drive,
+            role: role,            // 'host' | 'peer'
+            isHost: role === 'host',
+            permission: null,      // 'read' | 'read_write'
+            hostOnline: false,
+
+            // 文件夹绑定
+            boundFolder: null,     // { name, handle }
+            lockNonce: null,       // 锁文件 nonce（持有锁的凭证）
+
+            // 文件状态
+            fileCache: new Map(),
+            localFiles: [],
+            fileStatus: new Map(),
+            fileProgress: new Map(),
+            currentPath: '/',
+
+            // WebRTC (Peer 端)
+            rtcPeerConnection: null,
+            dataChannel: null,
+            acceptDC: null,
+            hostConnectionMode: 'unknown',
+
+            // WebRTC (Host 端)
+            peerConnections: {},   // peerId -> {pc, dc, mode, iceState, persistentId, displayName}
+            peerDeviceIds: {},     // uid -> peerId
+
+            // 传输
+            downloads: new Map(),
+            pendingDownloads: null,
+            pendingDownloadTimeout: null,
+            transferQueue: [],
+            transferBusy: false,
+            currentTransferSha1: null,
+            transferStats: { filesUploaded: 0, filesDownloaded: 0, bytesUploaded: 0, bytesDownloaded: 0 },
+
+            // 同步状态
+            peerLastPaths: null,
+            hostLastPaths: null,
+            hostPendingOps: null,
+            syncTimer: null,
+            syncInProgress: false,
+            scanInProgress: false,
+            lastScanFingerprints: null,
+
+            // 连接状态
+            connState: 'disconnected',
+            reconnectTimer: null,
+            reconnectAttempt: 0,
+            iceTimeout: null,
+            connectTimeout: null,
+            offerInProgress: false,
+            offerTimeout: null,
+            pendingSignaling: null,
+            connectionMode: 'wss_relay',
+            relaySeq: 0,
+            relayReceivedSeq: null,
+            syncStatus: 'idle',
+
+            // FS 观察
+            fsObserver: null,
+
+            // 活动
+            activities: [],
+
+            // UI
+            detailTab: 'files',
+            peers: []
+        };
+    },
+
+    // 获取当前活跃 session
+    _getActiveSession() {
+        if (!this.activeSessionId) return null;
+        return this.sessions.get(this.activeSessionId) || null;
+    },
+
+    // 兼容访问器策略说明：
+    // 旧代码大量使用 this.currentDrive / this.isHost / this._boundFolder 等。
+    // 保留这些字段作为"当前活跃 session 的镜像"，在 switchSession 时同步更新。
+    // 写入时双写（session + this），读取时统一从 this 读取。
+
+    createSession(drive, role) {
+        var session = this._createDriveSession(drive, role);
+        this.sessions.set(drive.drive_id, session);
+        return session;
+    },
+
+    destroySession(driveId) {
+        var session = this.sessions.get(driveId);
+        if (!session) return;
+        this._cleanupSessionConnection(session);
+        // 释放文件夹锁文件（异步，不阻塞）
+        var self = this;
+        this._releaseFolderLock(session).then(function() {});
+        this._bcast('drive_unlocked', { drive_id: driveId });
+        this.sessions.delete(driveId);
+        if (this.activeSessionId === driveId) {
+            this.activeSessionId = null;
+            if (this.sessions.size > 0) {
+                this.switchSession(this.sessions.keys().next().value);
+            } else {
+                this._showDriveList();
+            }
+        }
+    },
+
+    switchSession(driveId) {
+        var session = this.sessions.get(driveId);
+        if (!session) {
+            console.warn('[SYNC] switchSession: session not found ' + driveId);
+            return;
+        }
+        this.activeSessionId = driveId;
+        // 同步镜像字段（所有旧代码 this.xxx 访问的来源）
+        this.currentDrive = session.drive;
+        this.isHost = session.isHost;
+        this._boundFolder = session.boundFolder;
+        this._hostOnline = session.hostOnline;
+        this._currentDrivePermission = session.permission;
+        this.fileCache = session.fileCache;
+        this._localFiles = session.localFiles;
+        this._fileStatus = session.fileStatus;
+        this._fileProgress = session.fileProgress;
+        this.currentPath = session.currentPath;
+        this.peers = session.peers;
+        this.rtcPeerConnection = session.rtcPeerConnection;
+        this._peerConnections = session.peerConnections;
+        this._peerDeviceIds = session.peerDeviceIds;
+        this.dataChannel = session.dataChannel;
+        this.acceptDC = session.acceptDC;
+        this._hostConnectionMode = session.hostConnectionMode;
+        this._downloads = session.downloads;
+        this._pendingDownloads = session.pendingDownloads;
+        this._transferQueue = session.transferQueue;
+        this._transferBusy = session.transferBusy;
+        this._currentTransferSha1 = session.currentTransferSha1;
+        this._transferStats = session.transferStats;
+        this._peerLastPaths = session.peerLastPaths;
+        this._hostLastPaths = session.hostLastPaths;
+        this._hostPendingOps = session.hostPendingOps;
+        this._syncTimer = session.syncTimer;
+        this._syncInProgress = session.syncInProgress;
+        this._scanInProgress = session.scanInProgress;
+        this._lastScanFingerprints = session.lastScanFingerprints;
+        this._connState = session.connState;
+        this._reconnectTimer = session.reconnectTimer;
+        this._reconnectAttempt = session.reconnectAttempt;
+        this._iceTimeout = session.iceTimeout;
+        this._connectTimeout = session.connectTimeout;
+        this._offerInProgress = session.offerInProgress;
+        this._offerTimeout = session.offerTimeout;
+        this._pendingSignaling = session.pendingSignaling;
+        this._connectionMode = session.connectionMode;
+        this._relaySeq = session.relaySeq;
+        this._relayReceivedSeq = session.relayReceivedSeq;
+        this._syncStatus = session.syncStatus;
+        this._fsObserver = session.fsObserver;
+        this._activities = session.activities;
+        this._detailTab = session.detailTab;
+
+        // 渲染 UI
+        this._renderSessionSwitcher();
+        this._renderActiveSession();
+    },
+
+    // 渲染顶部的 session 切换器（tab 条）
+    _renderSessionSwitcher() {
+        var container = document.getElementById('sync-session-tabs');
+        if (!container) return;
+        var self = this;
+        container.innerHTML = '';
+        this.sessions.forEach(function(session, driveId) {
+            var tab = document.createElement('div');
+            tab.className = 'vx-sync-session-tab' + (driveId === self.activeSessionId ? ' active' : '');
+            var name = (session.drive && (session.drive.name || session.drive.drive_name)) || '同步盘';
+            var roleTag = session.isHost ? 'H' : 'P';
+            tab.innerHTML = '<span class="vx-sync-session-name">' + self.escapeHtml(name) + '</span>' +
+                            '<span class="vx-sync-session-role">' + roleTag + '</span>' +
+                            '<button class="vx-sync-session-close" title="关闭">&times;</button>';
+            tab.onclick = function(e) {
+                if (e.target.classList.contains('vx-sync-session-close')) {
+                    e.stopPropagation();
+                    self.leaveDrive(driveId);
+                } else {
+                    self.switchSession(driveId);
+                }
+            };
+            container.appendChild(tab);
+        });
+        container.style.display = this.sessions.size > 1 ? 'flex' : 'none';
+    },
+
+    _showDriveList() {
+        this.activeSessionId = null;
+        this.currentDrive = null;
+        this._renderSessionSwitcher();
+        var list = document.getElementById('sync-drive-list');
+        var detail = document.getElementById('sync-drive-detail');
+        var lobby = document.getElementById('sync-drive-lobby');
+        if (list) list.style.display = '';
+        if (detail) detail.style.display = 'none';
+        if (lobby) lobby.style.display = 'none';
+    },
+
+    _renderActiveSession() {
+        var session = this._getActiveSession();
+        if (!session) {
+            this._showDriveList();
+            return;
+        }
+        if (session.connState === 'disconnected' && !session.boundFolder) {
+            this.showLobby();
+        } else {
+            // detail 视图渲染（复用现有 render 逻辑）
+            var list = document.getElementById('sync-drive-list');
+            var lobby = document.getElementById('sync-drive-lobby');
+            var detail = document.getElementById('sync-drive-detail');
+            if (list) list.style.display = 'none';
+            if (lobby) lobby.style.display = 'none';
+            if (detail) detail.style.display = '';
+            this.render();
+            this.renderActivityList();
+        }
+    },
+
     // ========== Initialization ==========
     init(params) {
         console.log('[SYNC] Initializing VX_SYNC module, token=' + (TL.api_token ? 'present' : 'absent') + ' uid=' + (TL.uid || 'unknown'));
-
         // Consent gate: must agree before first use. Stored in localStorage so
         // the user only needs to agree once per browser.
         if (!this._hasConsent()) {
