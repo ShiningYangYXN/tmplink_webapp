@@ -102,14 +102,13 @@
                     <span data-tpl="sync_refresh">刷新</span>
                 </button>
                 <button class="vx-btn vx-btn-ghost vx-btn-sm" onclick="VX_SYNC.showJoinDrive()">
-                    <iconpark-icon name="ticket" size="16"></iconpark-icon>
+                    <iconpark-icon name="user-plus" size="16"></iconpark-icon>
                     <span data-tpl="sync_join">加入</span>
                 </button>
                 <button class="vx-btn vx-btn-ghost vx-btn-sm" onclick="VX_SYNC.showCreateDrive()">
                     <iconpark-icon name="circle-plus" size="16"></iconpark-icon>
                     <span data-tpl="sync_create">创建同步盘</span>
                 </button>
-                <span id="sync-drive-quota" class="vx-sync-drive-quota" style="display:none"></span>
             </div>
         </header>
         <!-- Drive List / Messages Tabs -->
@@ -161,7 +160,12 @@
                             </button>
                         </div>
                         <div class="vx-sync-messages-list" id="sync-messages-list">
-                            <div class="vx-sync-messages-empty" data-tpl="sync_no_messages">暂无消息</div>
+                            <div class="vx-empty" id="sync-messages-empty">
+                                <div class="vx-empty-icon">
+                                    <iconpark-icon name="message" size="48"></iconpark-icon>
+                                </div>
+                                <h3 class="vx-empty-title" data-tpl="sync_no_messages">暂无消息</h3>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -205,7 +209,7 @@
                             <span id="sync-lobby-host-dot"></span>
                             <strong id="sync-lobby-host-text"></strong>
                             <span class="vx-sync-lobby-meta-sep">·</span>
-                            <iconpark-icon name="mobile-signal" size="13"></iconpark-icon>
+                            <iconpark-icon name="share-nodes" size="13"></iconpark-icon>
                             <strong id="sync-lobby-nodes"></strong>
                             <span data-tpl="sync_lobby_nodes">节点</span>
                         </div>
@@ -351,7 +355,7 @@
                     <!-- Empty State -->
                     <div class="vx-empty" id="sync-empty-state" style="display:none">
                         <div class="vx-empty-icon">
-                            <iconpark-icon name="folder-open-e1ad2j7l"></iconpark-icon>
+                            <iconpark-icon name="folder-open"></iconpark-icon>
                         </div>
                         <h3 class="vx-empty-title" data-tpl="sync_no_files">暂无文件</h3>
                         <p class="vx-empty-text" data-tpl="sync_empty_hint">绑定文件夹后文件将自动同步，也可拖放文件手动上传</p>
@@ -549,7 +553,7 @@
         <div class="vx-modal-footer">
             <button class="vx-btn vx-btn-secondary" onclick="VX_SYNC.hideJoinDrive()" data-tpl="btn_cancel">取消</button>
             <button class="vx-btn vx-btn-primary" onclick="VX_SYNC.doJoinDrive()">
-                <iconpark-icon name="ticket"></iconpark-icon>
+                <iconpark-icon name="check"></iconpark-icon>
                 <span data-tpl="sync_join_submit">提交申请</span>
             </button>
         </div>

@@ -3212,19 +3212,8 @@ var VX_SYNC = VX_SYNC || {
         const container = document.getElementById('sync-drives');
         if (!container) return;
 
-        // Update drive creation quota display
-        var quotaEl = document.getElementById('sync-drive-quota');
         var driveCount = this.drives.length;
         var driveLimit = this._getDriveLimit();
-        if (quotaEl) {
-            var totalPeers = 0;
-            for (var i = 0; i < this.drives.length; i++) {
-                totalPeers += (this.drives[i].peer_count || 0);
-            }
-            var peerLimit = this._getPeerLimit();
-            quotaEl.innerHTML = '<span class="vx-sync-quota-row"><span class="vx-sync-quota-label">' + (typeof TL !== 'undefined' && TL.tpl_lang ? '' : '') + this._t('sync_quota_drives_label') + '</span><span class="vx-sync-quota-value">' + driveCount + '/' + driveLimit + '</span></span><span class="vx-sync-quota-row"><span class="vx-sync-quota-label">' + this._t('sync_quota_peers_label') + '</span><span class="vx-sync-quota-value">' + totalPeers + '/' + peerLimit + '</span></span>';
-            quotaEl.style.display = '';
-        }
         // Disable create button when limit reached
         var createBtns = document.querySelectorAll('[onclick="VX_SYNC.showCreateDrive()"]');
         var limitReached = (driveCount >= driveLimit);
@@ -3643,7 +3632,7 @@ var VX_SYNC = VX_SYNC || {
 
     showJoinDrive() {
         this.trackUI('sync_show_join');
-        document.getElementById('sync-join-modal').style.display = 'block';
+        document.getElementById('sync-join-modal').style.display = 'flex';
         document.getElementById('sync-join-invite-code').value = '';
     },
 
@@ -7321,7 +7310,7 @@ var VX_SYNC = VX_SYNC || {
 
     showGenerateInviteCode() {
         this.trackUI('sync_show_generate_invite');
-        document.getElementById('sync-generate-invite-modal').style.display = 'block';
+        document.getElementById('sync-generate-invite-modal').style.display = 'flex';
         // Bind custom input visibility
         var self = this;
         ['invite_expires', 'max_uses', 'perm_expires'].forEach(function(name) {
@@ -7612,7 +7601,7 @@ var VX_SYNC = VX_SYNC || {
         var markAllBtn = document.getElementById('sync-mark-all-read');
 
         if (!this._notifications || this._notifications.length === 0) {
-            container.innerHTML = '<div class="vx-sync-messages-empty" data-tpl="sync_no_messages">暂无消息</div>';
+            container.innerHTML = '<div class="vx-empty" id="sync-messages-empty"><div class="vx-empty-icon"><iconpark-icon name="message" size="48"></iconpark-icon></div><h3 class="vx-empty-title" data-tpl="sync_no_messages">暂无消息</h3></div>';
             if (typeof VXUI !== 'undefined' && VXUI.translateContainer) VXUI.translateContainer(container);
             if (markAllBtn) markAllBtn.style.display = 'none';
             return;
