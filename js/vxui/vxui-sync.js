@@ -3751,7 +3751,7 @@ var VX_SYNC = VX_SYNC || {
         // Set permission for shared drive users.
         // The drive owner always has read_write permission and can manage
         // permissions regardless of whether they are on the Host or Peer side.
-        var isOwner = String(drive.host_uid) === String(TL.uid);
+        var isOwner = this._isDriveOwner(drive);
         if (this.isHost || isOwner) {
             this._currentDrivePermission = 'read_write';
         } else {
@@ -4797,6 +4797,18 @@ var VX_SYNC = VX_SYNC || {
             case 'sync_control_ack':
             case 'offline_poll_resp':
             case 'heartbeat_ack':
+            case 'invite_code_create_resp':
+            case 'invite_code_list_resp':
+            case 'invite_code_revoke_resp':
+            case 'join_request_apply_resp':
+            case 'join_request_list_resp':
+            case 'join_request_approve_resp':
+            case 'join_request_reject_resp':
+            case 'join_request_revoke_resp':
+            case 'notification_list_resp':
+            case 'notification_mark_read_resp':
+            case 'notification_mark_all_read_resp':
+            case 'unread_count_resp':
             case 'error':
                 if (msg.request_id) {
                     this.handleWsResponse(msg.request_id, msg.payload || msg.data || {});
@@ -6610,6 +6622,20 @@ var VX_SYNC = VX_SYNC || {
         return hashArray.map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
     },
 
+    // ========== Permission Helpers ==========
+
+    // Check if the current user is the owner of the given drive (or currentDrive).
+    _isDriveOwner(drive) {
+        drive = drive || this.currentDrive;
+        if (!drive) return false;
+        return String(drive.host_uid) === String(TL.uid);
+    },
+
+    // Host or drive owner can manage permissions (invite codes, join requests).
+    _canManagePermissions() {
+        return this.isHost || this._isDriveOwner();
+    },
+
     // ========== Activity Tracking ==========
 
     /**
@@ -7482,7 +7508,7 @@ var VX_SYNC = VX_SYNC || {
     },
 
     async loadInviteCodes() {
-        if (!this.currentDrive || !this.isHost) return;
+        if (!this.currentDrive || !this._canManagePermissions()) return;
 
         try {
             var resp = await this.wsRequest('invite_code_list_req', {
@@ -7556,7 +7582,7 @@ var VX_SYNC = VX_SYNC || {
     // ========== Join Request Operations ==========
 
     async loadJoinRequests() {
-        if (!this.currentDrive || !this.isHost) return;
+        if (!this.currentDrive || !this._canManagePermissions()) return;
 
         try {
             var resp = await this.wsRequest('join_request_list_req', {
