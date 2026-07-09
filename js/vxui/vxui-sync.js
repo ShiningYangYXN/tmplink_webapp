@@ -5579,64 +5579,104 @@ var VX_SYNC = VX_SYNC || {
         }
     },
 
-    _cleanupConnection() {
-        console.log('[SYNC] Cleaning up drive connection: reconnectTimer=' + !!this._reconnectTimer + ' RTCPC=' + !!this.rtcPeerConnection + ' peerCons=' + Object.keys(this._peerConnections || {}).length + ' peerDeviceIds=' + Object.keys(this._peerDeviceIds || {}).length);
-        this.stopPeriodicSync();
-        this._stopHeartbeat();
-        this._clearJoinRetry();
-        if (this._reconnectTimer) {
-            clearTimeout(this._reconnectTimer);
-            this._reconnectTimer = null;
-        }
-        if (this._iceTimeout) {
-            clearTimeout(this._iceTimeout);
-            this._iceTimeout = null;
-        }
-        if (this._connectTimeout) {
-            clearTimeout(this._connectTimeout);
-            this._connectTimeout = null;
-        }
-        this._reconnectAttempt = 0;
-        this._offerInProgress = false;
-        if (this._offerTimeout) { clearTimeout(this._offerTimeout); this._offerTimeout = null; }
-        // Clear buffered signaling messages — they belong to the old connection
-        this._pendingSignaling = null;
-        // Reset connection state machine to initial disconnected state
-        this._connState = 'disconnected';
-        this._stopP2PProbing();
-        this._connectionMode = 'wss_relay';
+    // 清理指定 session 的连接与定时器（不影响其它 session）。
+    // 若 session 是当前活跃 session，同步清理 this.xxx 镜像字段。
+    _cleanupSessionConnection(session) {
+        if (!session) return;
+        console.log('[SYNC] Cleaning up session ' + session.drive_id + ': reconnectTimer=' + !!session.reconnectTimer + ' RTCPC=' + !!session.rtcPeerConnection + ' peerCons=' + Object.keys(session.peerConnections || {}).length);
 
-        // Send drive_leave to unregister from drive state on server.
-        // The global signalingWS stays open — it's per-user, not per-drive.
-        if (this.currentDrive && this.signalingWS && this.signalingWS.readyState === WebSocket.OPEN) {
-            this.wsRequest('drive_leave', {
-                drive_id: this.currentDrive.drive_id
-            }, true);
+        // 停止同步、心跳、FS 观察
+        this._stopSessionSync(session);
+
+        // 清理定时器
+        if (session.reconnectTimer) { clearTimeout(session.reconnectTimer); session.reconnectTimer = null; }
+        if (session.iceTimeout) { clearTimeout(session.iceTimeout); session.iceTimeout = null; }
+        if (session.connectTimeout) { clearTimeout(session.connectTimeout); session.connectTimeout = null; }
+        if (session.offerTimeout) { clearTimeout(session.offerTimeout); session.offerTimeout = null; }
+        session.reconnectAttempt = 0;
+        session.offerInProgress = false;
+        session.pendingSignaling = null;
+        session.connState = 'disconnected';
+        session.connectionMode = 'wss_relay';
+
+        // drive_leave（WSS 是 per-user 共享，不为单个 session 关闭）
+        if (this.signalingWS && this.signalingWS.readyState === WebSocket.OPEN) {
+            this.wsRequest('drive_leave', { drive_id: session.drive_id }, true);
         }
 
-        // Close WebRTC PeerConnection and DataChannels (per-drive)
-        if (this.rtcPeerConnection) {
-            try { this.rtcPeerConnection.close(); } catch (e) {}
-            this.rtcPeerConnection = null;
+        // 关闭 RTC
+        if (session.rtcPeerConnection) {
+            try { session.rtcPeerConnection.close(); } catch (e) {}
+            session.rtcPeerConnection = null;
         }
-        // Close all per-peer connections (Host side)
-        var self = this;
-        Object.keys(this._peerConnections).forEach(function(pid) {
-            var conn = self._peerConnections[pid];
-            try { conn.pc.close(); } catch (e) {}
+        Object.keys(session.peerConnections).forEach(function(pid) {
+            var conn = session.peerConnections[pid];
+            try { if (conn.pc) conn.pc.close(); } catch (e) {}
             if (conn.dc) { try { conn.dc.close(); } catch (e) {} }
         });
-        this._peerConnections = {};
-        this.dataChannel = null;
-        this.acceptDC = null;
-        this._peerDeviceIds = {};
-        this._eligiblePeers = [];
-        this._hostConnectionMode = 'unknown';
-        this._pendingDownloads = null;
-        if (this._pendingDownloadTimeout) {
-            clearTimeout(this._pendingDownloadTimeout);
-            this._pendingDownloadTimeout = null;
+        session.peerConnections = {};
+        session.dataChannel = null;
+        session.acceptDC = null;
+        session.peerDeviceIds = {};
+        session.pendingDownloads = null;
+        if (session.pendingDownloadTimeout) {
+            clearTimeout(session.pendingDownloadTimeout);
+            session.pendingDownloadTimeout = null;
         }
+
+        // 若清理的是 active session，同步镜像字段并调用依赖 this.xxx 的辅助方法
+        if (this.activeSessionId === session.drive_id) {
+            // 这些方法操作 this.xxx 镜像字段，仅对 active session 有效
+            try { this._stopHeartbeat(); } catch (e) {}
+            try { this._clearJoinRetry(); } catch (e) {}
+            try { this._stopP2PProbing(); } catch (e) {}
+
+            this.rtcPeerConnection = null;
+            this._peerConnections = {};
+            this._peerDeviceIds = {};
+            this.dataChannel = null;
+            this.acceptDC = null;
+            this._pendingDownloads = null;
+            this._connState = 'disconnected';
+            this._reconnectTimer = null;
+            this._iceTimeout = null;
+            this._connectTimeout = null;
+            this._offerInProgress = false;
+            this._offerTimeout = null;
+            this._pendingSignaling = null;
+            this._connectionMode = 'wss_relay';
+            this._syncTimer = null;
+            this._immediateSyncTimer = null;
+            this._fsObserver = null;
+            this._eligiblePeers = [];
+            this._hostConnectionMode = 'unknown';
+            if (this._pendingDownloadTimeout) {
+                clearTimeout(this._pendingDownloadTimeout);
+                this._pendingDownloadTimeout = null;
+            }
+        }
+    },
+
+    // 停止指定 session 的同步与 FS 观察
+    _stopSessionSync(session) {
+        if (!session) return;
+        if (session.syncTimer) { clearTimeout(session.syncTimer); session.syncTimer = null; }
+        // 兼容旧字段名 _syncTimer / _immediateSyncTimer
+        if (session._syncTimer) { clearTimeout(session._syncTimer); session._syncTimer = null; }
+        if (session._immediateSyncTimer) { clearTimeout(session._immediateSyncTimer); session._immediateSyncTimer = null; }
+        if (session.fsObserver) {
+            try { session.fsObserver.disconnect(); } catch (e) {}
+            session.fsObserver = null;
+        }
+        // 若是 active session，也清理 this.xxx 镜像
+        if (this.activeSessionId === session.drive_id) {
+            try { this.stopPeriodicSync(); } catch (e) {}
+        }
+    },
+
+    _cleanupConnection() {
+        // 兼容包装：清理当前活跃 session
+        this._cleanupSessionConnection(this._getActiveSession());
     },
 
     leaveDrive() {
