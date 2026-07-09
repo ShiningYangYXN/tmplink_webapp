@@ -335,6 +335,13 @@ var VX_SYNC = VX_SYNC || {
             this.signalingWS = null;
         }
         this._notifyReconnectDelay = 30000; // Prevent further reconnects
+        // Reset module state so next init() starts fresh
+        this._drivesLoaded = false;
+        this._drivesLoadSucceeded = false;
+        this._deviceNameLoaded = false;
+        this.drives = [];
+        this.currentDrive = null;
+        this.isHost = false;
     },
 
     // ========== IndexedDB Folder Handle Persistence ==========
@@ -3278,7 +3285,7 @@ var VX_SYNC = VX_SYNC || {
             }
 
             // Check if this is a shared drive (user is not the owner)
-            var isShared = !isHost && drive.host_uid !== TL.uid;
+            var isShared = !isHost && String(drive.host_uid) !== String(TL.uid);
             var sharedTagHtml = isShared ? '<span class="vx-sync-drive-tag-shared">' + this._t('sync_shared') + '</span>' : '';
 
             return '<div class="vx-sync-drive-card" onclick="VX_SYNC.enterDrive(\'' + drive.drive_id + '\')">' +
@@ -3652,10 +3659,7 @@ var VX_SYNC = VX_SYNC || {
                 invite_code: inviteCode,
                 applicant_name: this.deviceName || this.deviceID,
             });
-            if (resp.error) {
-                VXUI.showMsg(resp.error, 'error');
-                return;
-            }
+            if (resp.status !== 1) return;
             VXUI.showMsg(this._t('sync_join_request_submitted'), 'success');
             this.hideJoinDrive();
             this.loadDrives();
@@ -4741,12 +4745,27 @@ var VX_SYNC = VX_SYNC || {
                 break;
 
             // ========== Response types (for request/response matching) ==========
+            case 'drive_enter_resp':
+                // Apply authoritative permission from server before resolving
+                // any pending wsRequest. drive_enter_resp.permission is the
+                // server's source of truth (catches mid-session revocation /
+                // expiration that drive_list doesn't reflect yet).
+                if (msg.payload && msg.payload.permission) {
+                    this._currentDrivePermission = msg.payload.permission;
+                    if (!this.isHost) {
+                        console.log('[SYNC] drive_enter_resp permission=' + msg.payload.permission);
+                    }
+                }
+                if (msg.request_id) {
+                    this.handleWsResponse(msg.request_id, msg.payload || msg.data || {});
+                }
+                break;
+
             case 'register_device_resp':
             case 'drive_list_resp':
             case 'drive_create_resp':
             case 'drive_join_resp':
             case 'drive_delete_resp':
-            case 'drive_enter_resp':
             case 'drive_leave_resp':
             case 'device_get_resp':
             case 'device_set_resp':
@@ -7373,10 +7392,7 @@ var VX_SYNC = VX_SYNC || {
                 max_uses: maxUses,
                 permission_expires_days: permExpiresDays,
             });
-            if (resp.error) {
-                VXUI.showMsg(resp.error, 'error');
-                return;
-            }
+            if (resp.status !== 1) return;
             VXUI.showMsg(this._t('sync_invite_created'), 'success');
             this.hideGenerateInviteCode();
             this.loadInviteCodes();
@@ -7393,11 +7409,8 @@ var VX_SYNC = VX_SYNC || {
             var resp = await this.wsRequest('invite_code_list_req', {
                 drive_id: this.currentDrive.drive_id,
             });
-            if (resp.error) {
-                console.error('load invite codes failed', resp.error);
-                return;
-            }
-            this._inviteCodes = resp.codes || [];
+            if (resp.status !== 1) return;
+            this._inviteCodes = (resp.data && resp.data.codes) || [];
             this.renderInviteCodeList();
         } catch (e) {
             console.error('loadInviteCodes error', e);
@@ -7452,10 +7465,7 @@ var VX_SYNC = VX_SYNC || {
                 drive_id: this.currentDrive.drive_id,
                 code_id: codeId,
             });
-            if (resp.error) {
-                VXUI.showMsg(resp.error, 'error');
-                return;
-            }
+            if (resp.status !== 1) return;
             VXUI.showMsg(this._t('sync_invite_revoked'), 'success');
             this.loadInviteCodes();
         } catch (e) {
@@ -7473,11 +7483,8 @@ var VX_SYNC = VX_SYNC || {
             var resp = await this.wsRequest('join_request_list_req', {
                 drive_id: this.currentDrive.drive_id,
             });
-            if (resp.error) {
-                console.error('load join requests failed', resp.error);
-                return;
-            }
-            this._joinRequests = resp.requests || [];
+            if (resp.status !== 1) return;
+            this._joinRequests = (resp.data && resp.data.requests) || [];
             this.renderJoinRequestList();
         } catch (e) {
             console.error('loadJoinRequests error', e);
@@ -7529,10 +7536,7 @@ var VX_SYNC = VX_SYNC || {
                 drive_id: this.currentDrive.drive_id,
                 request_id: requestId,
             });
-            if (resp.error) {
-                VXUI.showMsg(resp.error, 'error');
-                return;
-            }
+            if (resp.status !== 1) return;
             VXUI.showMsg(this._t('sync_request_approved'), 'success');
             this.loadJoinRequests();
         } catch (e) {
@@ -7548,10 +7552,7 @@ var VX_SYNC = VX_SYNC || {
                 drive_id: this.currentDrive.drive_id,
                 request_id: requestId,
             });
-            if (resp.error) {
-                VXUI.showMsg(resp.error, 'error');
-                return;
-            }
+            if (resp.status !== 1) return;
             VXUI.showMsg(this._t('sync_request_rejected'), 'success');
             this.loadJoinRequests();
         } catch (e) {
@@ -7567,10 +7568,7 @@ var VX_SYNC = VX_SYNC || {
                 drive_id: this.currentDrive.drive_id,
                 request_id: requestId,
             });
-            if (resp.error) {
-                VXUI.showMsg(resp.error, 'error');
-                return;
-            }
+            if (resp.status !== 1) return;
             VXUI.showMsg(this._t('sync_permission_revoked'), 'success');
             this.loadJoinRequests();
         } catch (e) {
@@ -7584,11 +7582,12 @@ var VX_SYNC = VX_SYNC || {
     async loadNotifications() {
         try {
             var resp = await this.wsRequest('notification_list_req', {});
-            if (resp.error) {
-                console.error('load notifications failed', resp.error);
-                return;
-            }
-            this._notifications = resp.notifications || [];
+            if (resp.status !== 1) return;
+            this._notifications = (resp.data && resp.data.notifications) || [];
+            // Sync unread count with actual unread items in the list
+            var unreadInList = 0;
+            this._notifications.forEach(function(n) { if (!n.is_read) unreadInList++; });
+            this._unreadNotificationCount = unreadInList;
             this.renderNotifications();
             this.updateUnreadBadge();
         } catch (e) {
@@ -7670,8 +7669,8 @@ var VX_SYNC = VX_SYNC || {
     async loadUnreadCount() {
         try {
             var resp = await this.wsRequest('unread_count_req', {});
-            if (resp.error) return;
-            this._unreadNotificationCount = resp.count || 0;
+            if (resp.status !== 1) return;
+            this._unreadNotificationCount = (resp.data && resp.data.count) || 0;
             this.updateUnreadBadge();
         } catch (e) {
             console.error('load unread count failed', e);

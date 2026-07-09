@@ -1481,6 +1481,8 @@
     "sync_type_join_approved": "Join request approved",
     "sync_type_join_rejected": "Join request rejected",
     "sync_type_permission_revoked": "Permission revoked",
+    "sync_type_drive_deleted": "Drive deleted",
+    "sync_type_permission_expired": "Permission expired",
     "read_only_permission_denied": "Read-only permission denied for write operations",
     "sync_no_permission_error": "Permission expired or revoked, returning to drive list"
 }

@@ -1478,6 +1478,8 @@
     "sync_type_join_approved": "加入申请已批准",
     "sync_type_join_rejected": "加入申请已拒绝",
     "sync_type_permission_revoked": "权限已被撤销",
+    "sync_type_drive_deleted": "同步盘已被删除",
+    "sync_type_permission_expired": "权限已过期",
     "read_only_permission_denied": "当前权限为只读，无法进行写入操作",
     "sync_no_permission_error": "权限已过期或已被撤销，即将返回同步盘列表"
 }
