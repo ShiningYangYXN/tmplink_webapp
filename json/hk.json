@@ -1419,5 +1419,18 @@
     "sync_delete_host_warning": "作為主機，刪除後所有客戶端將無法連接，同步盤內的檔案元數據將被清除。",
     "sync_delete_local_safe": "本地資料夾中的檔案不會被刪除。",
     "sync_connected": "已連接",
-    "sync_delete_drive_leave": "退出"
+    "sync_delete_drive_leave": "退出",
+    "sync_join": "加入",
+    "sync_join_drive_title": "使用邀請碼加入同步盤",
+    "sync_join_submit": "提交申請",
+    "sync_permission": "權限",
+    "sync_shared": "共享",
+    "sync_tab_permissions": "權限",
+    "sync_tab_drives": "同步盤",
+    "sync_tab_messages": "訊息",
+    "sync_notifications": "系統訊息",
+    "sync_no_messages": "暫無訊息",
+    "sync_mark_all_read": "全部已讀",
+    "read_only_permission_denied": "當前權限為唯讀，無法進行寫入操作",
+    "sync_no_permission_error": "權限已過期或已被撤銷，即將返回同步盤列表"
 }

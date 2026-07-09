@@ -48,7 +48,14 @@ var VX_SYNC = VX_SYNC || {
     _stunServersCache: null,  // {iceServers, expires} cached STUN server list
     _eligiblePeers: [],      // UIDs of eligible peers (latency < 100ms)
     _syncStatus: 'idle',     // 'idle' | 'ready' | 'syncing' | 'offline'
-    _detailTab: 'files',     // 'files' | 'peers' | 'activity' - active tab in detail view
+    _detailTab: 'files',     // 'files' | 'permissions' | 'peers' | 'activity' - active tab in detail view
+    _mainTab: 'drives',       // 'drives' | 'messages' - active main tab
+    _inviteCodes: [],         // Current invite codes for the drive
+    _joinRequests: [],        // Current join requests for the drive
+    _myPendingRequests: [],   // Applicant's own join requests (pending/approved/rejected) for card display
+    _notifications: [],       // User's notifications
+    _unreadNotificationCount: 0, // Count of unread notifications
+    _currentDrivePermission: null, // 'read' or 'read_write' for shared drive users
     _ctxTarget: null,        // {sha1, name} for context menu target
     _hostOnline: true,       // Whether the drive host is online
     _boundFolder: null,      // {name, handle} for bound folder
@@ -87,11 +94,20 @@ var VX_SYNC = VX_SYNC || {
     _drivesLoaded: false,    // Whether drive list has been loaded from server
     _peerLastPaths: null,    // Set of file paths Peer had last sync (null = first sync)
     _hostLastPaths: null,    // Set of file paths Host had last sync (null = first sync)
+    _hostPendingOps: null,   // Pending Host operations: { path: { op: 'delete'|'rename'|'move', ts, newPath? } }
     _transferSpeed: 0,       // Current transfer speed in bytes/sec
     _transferStartTime: 0,   // Timestamp when current transfer started
     _transferLastBytes: 0,   // Bytes received/sent at last speed check
     _transferLastTime: 0,    // Timestamp of last speed check
     _transferSourceNode: '', // Display name of the node providing/receiving the file
+
+    // ========== Multi-Session State ==========
+    _tabID: '',                       // 当前 tab 的唯一标识（sessionStorage 持久，刷新同一 tab 保持不变）
+    _bcastChannel: null,              // BroadcastChannel 实例（同浏览器多 tab 协调）
+    _localDriveLocks: {},             // 本 tab 已知占用：drive_id -> { tab_id, role, folder_name }
+    _lockFileHeartbeatTimer: null,    // 锁文件心跳定时器（1s 间隔，运行状态指示）
+    sessions: new Map(),              // drive_id -> DriveSession（正在运行的同步盘实例）
+    activeSessionId: null,            // 当前 UI 展示的 session drive_id
 
     /**
      * WebRTC Connection State Machine
@@ -116,16 +132,335 @@ var VX_SYNC = VX_SYNC || {
     _currentTransferSha1: null, // sha1 of file currently being transferred
     _localFiles: [],          // Peer: local bound-folder files at currentPath [{name,size,mtime,is_dir,parent_path,sha1}]
 
+    // ========== DriveSession ==========
+    // 创建一个独立的 DriveSession 状态对象。
+    // 所有原 this.xxx 单 drive 字段迁移到 session 内，实现多盘并行。
+    _createDriveSession(drive, role) {
+        return {
+            drive_id: drive.drive_id,
+            drive: drive,
+            role: role,            // 'host' | 'peer'
+            isHost: role === 'host',
+            permission: null,      // 'read' | 'read_write'
+            hostOnline: false,
+
+            // 文件夹绑定
+            boundFolder: null,     // { name, handle }
+            lockNonce: null,       // 锁文件 nonce（持有锁的凭证）
+
+            // 文件状态
+            fileCache: new Map(),
+            localFiles: [],
+            fileStatus: new Map(),
+            fileProgress: new Map(),
+            currentPath: '/',
+
+            // WebRTC (Peer 端)
+            rtcPeerConnection: null,
+            dataChannel: null,
+            acceptDC: null,
+            hostConnectionMode: 'unknown',
+
+            // WebRTC (Host 端)
+            peerConnections: {},   // peerId -> {pc, dc, mode, iceState, persistentId, displayName}
+            peerDeviceIds: {},     // uid -> peerId
+
+            // 传输
+            downloads: new Map(),
+            pendingDownloads: null,
+            pendingDownloadTimeout: null,
+            transferQueue: [],
+            transferBusy: false,
+            currentTransferSha1: null,
+            transferStats: { filesUploaded: 0, filesDownloaded: 0, bytesUploaded: 0, bytesDownloaded: 0 },
+
+            // 同步状态
+            peerLastPaths: null,
+            hostLastPaths: null,
+            hostPendingOps: null,
+            syncTimer: null,
+            immediateSyncTimer: null,
+            syncInProgress: false,
+            scanInProgress: false,
+            lastScanFingerprints: null,
+
+            // 连接状态
+            connState: 'disconnected',
+            reconnectTimer: null,
+            reconnectAttempt: 0,
+            iceTimeout: null,
+            connectTimeout: null,
+            offerInProgress: false,
+            offerTimeout: null,
+            pendingSignaling: null,
+            connectionMode: 'wss_relay',
+            relaySeq: 0,
+            relayReceivedSeq: null,
+            syncStatus: 'idle',
+
+            // FS 观察
+            fsObserver: null,
+
+            // 活动
+            activities: [],
+
+            // UI
+            detailTab: 'files',
+            peers: []
+        };
+    },
+
+    // 获取当前活跃 session
+    _getActiveSession() {
+        if (!this.activeSessionId) return null;
+        return this.sessions.get(this.activeSessionId) || null;
+    },
+
+    // 兼容访问器策略说明：
+    // 旧代码大量使用 this.currentDrive / this.isHost / this._boundFolder 等。
+    // 保留这些字段作为"当前活跃 session 的镜像"，在 switchSession 时同步更新。
+    // 写入时双写（session + this），读取时统一从 this 读取。
+
+    createSession(drive, role) {
+        var session = this._createDriveSession(drive, role);
+        this.sessions.set(drive.drive_id, session);
+        return session;
+    },
+
+    destroySession(driveId) {
+        var session = this.sessions.get(driveId);
+        if (!session) return;
+        this._cleanupSessionConnection(session);
+        // 释放文件夹锁文件（异步，不阻塞）
+        var self = this;
+        this._releaseFolderLock(session).then(function() {});
+        this._bcast('drive_unlocked', { drive_id: driveId });
+        this.sessions.delete(driveId);
+        if (this.activeSessionId === driveId) {
+            this.activeSessionId = null;
+            if (this.sessions.size > 0) {
+                this.switchSession(this.sessions.keys().next().value);
+            } else {
+                this._showDriveList();
+            }
+        }
+    },
+
+    switchSession(driveId) {
+        var session = this.sessions.get(driveId);
+        if (!session) {
+            console.warn('[SYNC] switchSession: session not found ' + driveId);
+            return;
+        }
+        // 切换前，将当前活跃 session 的镜像字段持久化回 session 对象
+        // （timers/state 等通过 this.xxx 赋值的字段需要写回，否则会丢失）
+        if (this.activeSessionId && this.activeSessionId !== driveId) {
+            var prevSession = this.sessions.get(this.activeSessionId);
+            if (prevSession) this._persistMirrorToSession(prevSession);
+        }
+        this.activeSessionId = driveId;
+        this._loadSessionToMirror(session);
+
+        // 渲染 UI
+        this._renderSessionSwitcher();
+        this._renderActiveSession();
+    },
+
+    // 将 session 对象的字段加载到 this.xxx 镜像字段
+    _loadSessionToMirror(session) {
+        this.currentDrive = session.drive;
+        this.isHost = session.isHost;
+        this._boundFolder = session.boundFolder;
+        this._hostOnline = session.hostOnline;
+        this._currentDrivePermission = session.permission;
+        this.fileCache = session.fileCache;
+        this._localFiles = session.localFiles;
+        this._fileStatus = session.fileStatus;
+        this._fileProgress = session.fileProgress;
+        this.currentPath = session.currentPath;
+        this.peers = session.peers;
+        this.rtcPeerConnection = session.rtcPeerConnection;
+        this._peerConnections = session.peerConnections;
+        this._peerDeviceIds = session.peerDeviceIds;
+        this.dataChannel = session.dataChannel;
+        this.acceptDC = session.acceptDC;
+        this._hostConnectionMode = session.hostConnectionMode;
+        this._downloads = session.downloads;
+        this._pendingDownloads = session.pendingDownloads;
+        this._pendingDownloadTimeout = session.pendingDownloadTimeout;
+        this._transferQueue = session.transferQueue;
+        this._transferBusy = session.transferBusy;
+        this._currentTransferSha1 = session.currentTransferSha1;
+        this._transferStats = session.transferStats;
+        this._peerLastPaths = session.peerLastPaths;
+        this._hostLastPaths = session.hostLastPaths;
+        this._hostPendingOps = session.hostPendingOps;
+        this._syncTimer = session.syncTimer;
+        this._immediateSyncTimer = session.immediateSyncTimer;
+        this._syncInProgress = session.syncInProgress;
+        this._scanInProgress = session.scanInProgress;
+        this._lastScanFingerprints = session.lastScanFingerprints;
+        this._connState = session.connState;
+        this._reconnectTimer = session.reconnectTimer;
+        this._reconnectAttempt = session.reconnectAttempt;
+        this._iceTimeout = session.iceTimeout;
+        this._connectTimeout = session.connectTimeout;
+        this._offerInProgress = session.offerInProgress;
+        this._offerTimeout = session.offerTimeout;
+        this._pendingSignaling = session.pendingSignaling;
+        this._connectionMode = session.connectionMode;
+        this._relaySeq = session.relaySeq;
+        this._relayReceivedSeq = session.relayReceivedSeq;
+        this._syncStatus = session.syncStatus;
+        this._fsObserver = session.fsObserver;
+        this._activities = session.activities;
+        this._detailTab = session.detailTab;
+    },
+
+    // 将 this.xxx 镜像字段持久化回 session 对象
+    // （切换/清理前调用，确保 timers/state 等通过 this.xxx 赋值的字段不丢失）
+    _persistMirrorToSession(session) {
+        if (!session) return;
+        session.drive = this.currentDrive;
+        session.isHost = this.isHost;
+        session.boundFolder = this._boundFolder;
+        session.hostOnline = this._hostOnline;
+        session.permission = this._currentDrivePermission;
+        session.fileCache = this.fileCache;
+        session.localFiles = this._localFiles;
+        session.fileStatus = this._fileStatus;
+        session.fileProgress = this._fileProgress;
+        session.currentPath = this.currentPath;
+        session.peers = this.peers;
+        session.rtcPeerConnection = this.rtcPeerConnection;
+        session.peerConnections = this._peerConnections;
+        session.peerDeviceIds = this._peerDeviceIds;
+        session.dataChannel = this.dataChannel;
+        session.acceptDC = this.acceptDC;
+        session.hostConnectionMode = this._hostConnectionMode;
+        session.downloads = this._downloads;
+        session.pendingDownloads = this._pendingDownloads;
+        session.pendingDownloadTimeout = this._pendingDownloadTimeout;
+        session.transferQueue = this._transferQueue;
+        session.transferBusy = this._transferBusy;
+        session.currentTransferSha1 = this._currentTransferSha1;
+        session.transferStats = this._transferStats;
+        session.peerLastPaths = this._peerLastPaths;
+        session.hostLastPaths = this._hostLastPaths;
+        session.hostPendingOps = this._hostPendingOps;
+        session.syncTimer = this._syncTimer;
+        session.immediateSyncTimer = this._immediateSyncTimer;
+        session.syncInProgress = this._syncInProgress;
+        session.scanInProgress = this._scanInProgress;
+        session.lastScanFingerprints = this._lastScanFingerprints;
+        session.connState = this._connState;
+        session.reconnectTimer = this._reconnectTimer;
+        session.reconnectAttempt = this._reconnectAttempt;
+        session.iceTimeout = this._iceTimeout;
+        session.connectTimeout = this._connectTimeout;
+        session.offerInProgress = this._offerInProgress;
+        session.offerTimeout = this._offerTimeout;
+        session.pendingSignaling = this._pendingSignaling;
+        session.connectionMode = this._connectionMode;
+        session.relaySeq = this._relaySeq;
+        session.relayReceivedSeq = this._relayReceivedSeq;
+        session.syncStatus = this._syncStatus;
+        session.fsObserver = this._fsObserver;
+        session.activities = this._activities;
+        session.detailTab = this._detailTab;
+    },
+
+    // 渲染顶部的 session 切换器（tab 条）
+    _renderSessionSwitcher() {
+        var container = document.getElementById('sync-session-tabs');
+        if (!container) return;
+        var self = this;
+        container.innerHTML = '';
+        this.sessions.forEach(function(session, driveId) {
+            var tab = document.createElement('div');
+            tab.className = 'vx-sync-session-tab' + (driveId === self.activeSessionId ? ' active' : '');
+            var name = (session.drive && (session.drive.name || session.drive.drive_name)) || '同步盘';
+            var roleTag = session.isHost ? 'H' : 'P';
+            tab.innerHTML = '<span class="vx-sync-session-name">' + self.escapeHtml(name) + '</span>' +
+                            '<span class="vx-sync-session-role">' + roleTag + '</span>' +
+                            '<button class="vx-sync-session-close" title="关闭">&times;</button>';
+            tab.onclick = function(e) {
+                if (e.target.classList.contains('vx-sync-session-close')) {
+                    e.stopPropagation();
+                    self.leaveDrive(driveId);
+                } else {
+                    self.switchSession(driveId);
+                }
+            };
+            container.appendChild(tab);
+        });
+        container.style.display = this.sessions.size > 1 ? 'flex' : 'none';
+    },
+
+    _showDriveList() {
+        this.activeSessionId = null;
+        this.currentDrive = null;
+        this._renderSessionSwitcher();
+        var list = document.getElementById('sync-drive-list');
+        var detail = document.getElementById('sync-drive-detail');
+        var lobby = document.getElementById('sync-drive-lobby');
+        if (list) list.style.display = '';
+        if (detail) detail.style.display = 'none';
+        if (lobby) lobby.style.display = 'none';
+    },
+
+    _renderActiveSession() {
+        var session = this._getActiveSession();
+        if (!session) {
+            this._showDriveList();
+            return;
+        }
+        if (session.connState === 'disconnected' && !session.boundFolder) {
+            this.showLobby();
+        } else {
+            // detail 视图渲染（复用现有 render 逻辑）
+            var list = document.getElementById('sync-drive-list');
+            var lobby = document.getElementById('sync-drive-lobby');
+            var detail = document.getElementById('sync-drive-detail');
+            if (list) list.style.display = 'none';
+            if (lobby) lobby.style.display = 'none';
+            if (detail) detail.style.display = '';
+            this.render();
+            this.renderActivityList();
+        }
+    },
+
     // ========== Initialization ==========
     init(params) {
         console.log('[SYNC] Initializing VX_SYNC module, token=' + (TL.api_token ? 'present' : 'absent') + ' uid=' + (TL.uid || 'unknown'));
-
         // Consent gate: must agree before first use. Stored in localStorage so
         // the user only needs to agree once per browser.
         if (!this._hasConsent()) {
             console.log('[SYNC] Consent not granted yet, showing consent modal');
             VXUI.openModal('sync-consent-modal');
             return;
+        }
+
+        // 生成或恢复 tab_id（sessionStorage 持久，刷新同一 tab 保持不变）
+        try {
+            this._tabID = sessionStorage.getItem('vx_sync_tab_id');
+            if (!this._tabID) {
+                this._tabID = 'tab_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 8);
+                sessionStorage.setItem('vx_sync_tab_id', this._tabID);
+            }
+        } catch (e) {
+            this._tabID = 'tab_' + Date.now().toString(36);
+        }
+
+        // BroadcastChannel：同浏览器多 tab 协调
+        try {
+            this._bcastChannel = new BroadcastChannel('vx_sync');
+            var self = this;
+            this._bcastChannel.onmessage = function(ev) {
+                self._handleBroadcastMessage(ev.data);
+            };
+        } catch (e) {
+            console.warn('[SYNC] BroadcastChannel unavailable:', e);
         }
 
         this._resolveSyncServer();
@@ -138,6 +473,27 @@ var VX_SYNC = VX_SYNC || {
         this._loadDeviceName();
         // Restore usage guide collapse state
         this._restoreGuideState();
+
+        // 锁文件心跳：每 1s 更新所有 session 的 drive.lock heartbeat（运行状态指示）
+        var self2 = this;
+        this._lockFileHeartbeatTimer = setInterval(function() {
+            self2._heartbeatLockFiles();
+        }, 1000);
+
+        // 页面卸载拦截：有活跃 session 时提示用户
+        var selfUnload = this;
+        window.addEventListener('beforeunload', function(e) {
+            if (selfUnload.sessions.size > 0) {
+                e.preventDefault();
+                e.returnValue = selfUnload._t('sync_leave_warning');
+                return e.returnValue;
+            }
+        });
+
+        // pagehide: best-effort 释放（锁文件依赖 3s 过期回收）
+        window.addEventListener('pagehide', function() {
+            selfUnload._releaseAllLocksOnUnload();
+        });
     },
 
     // Check whether the user has accepted the sync beta consent.
@@ -147,6 +503,77 @@ var VX_SYNC = VX_SYNC || {
         } catch (e) {
             return false;
         }
+    },
+
+    // ========== BroadcastChannel Coordination ==========
+
+    // 向其它 tab 广播消息
+    _bcast(type, data) {
+        if (!this._bcastChannel) return;
+        try {
+            this._bcastChannel.postMessage(Object.assign({ type: type, tab_id: this._tabID }, data || {}));
+        } catch (e) {}
+    },
+
+    // 处理来自其它 tab 的消息
+    _handleBroadcastMessage(msg) {
+        if (!msg || msg.tab_id === this._tabID) return;
+        console.log('[SYNC] Broadcast from tab ' + msg.tab_id + ': ' + msg.type);
+        switch (msg.type) {
+            case 'drive_locked':
+                this._localDriveLocks[msg.drive_id] = {
+                    tab_id: msg.tab_id,
+                    role: msg.role,
+                    folder_name: msg.folder_name
+                };
+                // 更新 drive 卡片显示"已在其它 tab 打开"
+                this.renderDriveList();
+                break;
+            case 'drive_unlocked':
+                delete this._localDriveLocks[msg.drive_id];
+                this.renderDriveList();
+                break;
+            case 'tab_unloading':
+                // 其它 tab 正在卸载，清理它声明的占用（锁文件靠 3s 过期自动回收，这里仅清本地缓存）
+                var toRemove = [];
+                for (var did in this._localDriveLocks) {
+                    if (this._localDriveLocks[did].tab_id === msg.tab_id) {
+                        toRemove.push(did);
+                    }
+                }
+                var changed = toRemove.length > 0;
+                var self = this;
+                toRemove.forEach(function(did) { delete self._localDriveLocks[did]; });
+                if (changed) this.renderDriveList();
+                break;
+        }
+    },
+
+    // 锁文件心跳：每 1s 更新所有 session 的 drive.lock
+    _heartbeatLockFiles() {
+        if (!this.sessions || this.sessions.size === 0) return;
+        var self = this;
+        this.sessions.forEach(function(session) {
+            self._touchDriveLockFile(session);
+        });
+    },
+
+    // 页面卸载时的 best-effort 释放（锁文件依赖 3s 过期回收）
+    _releaseAllLocksOnUnload() {
+        if (this.sessions.size === 0) return;
+        // 1. 广播给其它 tab
+        this._bcast('tab_unloading', { tab_id: this._tabID });
+        // 2. best-effort WSS drive_leave for each session
+        if (this.signalingWS && this.signalingWS.readyState === WebSocket.OPEN) {
+            var self = this;
+            this.sessions.forEach(function(session) {
+                try {
+                    self.wsRequest('drive_leave', { drive_id: session.drive_id }, true);
+                } catch (e) {}
+            });
+        }
+        // 3. 锁文件无法在 pagehide 中可靠删除（File System Access API 是异步的），
+        //    依赖 3s heartbeat 过期机制快速回收。
     },
 
     // User accepted the consent — persist and finish initializing the module.
@@ -328,6 +755,14 @@ var VX_SYNC = VX_SYNC || {
             this.signalingWS = null;
         }
         this._notifyReconnectDelay = 30000; // Prevent further reconnects
+        // Reset module state so next init() starts fresh
+        this._drivesLoaded = false;
+        this._drivesLoadSucceeded = false;
+        this._deviceNameLoaded = false;
+        this.drives = [];
+        this._myPendingRequests = [];
+        this.currentDrive = null;
+        this.isHost = false;
     },
 
     // ========== IndexedDB Folder Handle Persistence ==========
@@ -407,6 +842,28 @@ var VX_SYNC = VX_SYNC || {
                                     name: data.handle.name,
                                     handle: data.handle
                                 };
+
+                                // 多 session：同步写入 session 并获取文件夹锁文件
+                                var session = self._getActiveSession();
+                                if (session) {
+                                    session.boundFolder = self._boundFolder;
+                                    var locked = await self._acquireFolderLock(session);
+                                    if (!locked) {
+                                        console.warn('[SYNC] Folder lock acquisition failed for restored folder');
+                                        VXUI.showMsg(self._t('sync_folder_locked_other_tab'), 'warning');
+                                        self._boundFolder = null;
+                                        session.boundFolder = null;
+                                        self._updateFolderPathDisplay();
+                                        resolve(null);
+                                        return;
+                                    }
+                                    self._bcast('drive_locked', {
+                                        drive_id: session.drive_id,
+                                        role: session.role,
+                                        folder_name: session.boundFolder.name
+                                    });
+                                }
+
                                 self._updateFolderPathDisplay();
                                 // Load persisted sync state from .tmpsync/state.json
                                 self._loadSyncState();
@@ -604,8 +1061,27 @@ var VX_SYNC = VX_SYNC || {
         
         if (!hasError) {
             console.log('[SYNC] WS response: request_id=' + requestId);
-        } else if (!pending.silent) {
-            this.toastError(data.error || this._t('sync_request_failed'));
+        } else {
+            if (!pending.silent) {
+                this.toastError(data.error || this._t('sync_request_failed'));
+            }
+            // Special handling: if drive_enter returns no_permission, cleanup and return to drive list
+            if (data.error === 'no_permission' && this.currentDrive) {
+                console.warn('[SYNC] Permission denied for drive, cleaning up and returning to list');
+                this.hideLoading();
+                this._cleanupConnection();
+                this._boundFolder = null;
+                this.isHost = false;
+                this.currentDrive = null;
+                // Show drive list and hide detail/lobby
+                document.getElementById('sync-drive-list').style.display = '';
+                document.getElementById('sync-drive-detail').style.display = 'none';
+                document.getElementById('sync-drive-lobby').style.display = 'none';
+                // Reload drives to remove the expired/unauthorized one
+                this.loadDrives();
+                // Show friendly message
+                this.toastError(this._t('sync_no_permission_error'));
+            }
         }
         
         pending.resolve(response);
@@ -799,8 +1275,8 @@ var VX_SYNC = VX_SYNC || {
 
             case 'peer_file_report':
                 if (!this.isHost) break;
-                console.log('[SYNC] Received peer_file_report via WSS: ' + (payload.files ? payload.files.length : 0) + ' files, ' + (payload.deleted ? payload.deleted.length : 0) + ' deleted');
-                this.handlePeerFileReport(payload.files || [], payload.deleted || [], msg.from_device);
+                console.log('[SYNC] Received peer_file_report via WSS: ' + (payload.files ? payload.files.length : 0) + ' files, ' + (payload.deleted ? payload.deleted.length : 0) + ' deleted' + (payload.folder_changed ? ' (folder changed)' : ''));
+                this.handlePeerFileReport(payload.files || [], payload.deleted || [], msg.from_device, payload.folder_changed === true);
                 break;
 
             case 'file_report_req':
@@ -919,8 +1395,110 @@ var VX_SYNC = VX_SYNC || {
             this.drives = [];
         }
         this.renderDriveList();
+        this.loadUnreadCount();
+        // Also load the applicant's own pending join requests so the
+        // "审核中" / "可加入" cards render (and persist across reloads).
+        this.loadMyJoinRequests();
     },
-    
+
+    // Fetch the applicant's own join requests (pending/approved/rejected)
+    // and merge them into the drive-list rendering as pending-review cards.
+    async loadMyJoinRequests() {
+        if (!TL.api_token) return;
+        try {
+            const resp = await this.wsRequest('my_join_requests_req', {});
+            if (resp.status !== 1) return;
+            var list = (resp.data && resp.data.requests) || [];
+            // Drop requests whose drive already appears in the joined list
+            // (e.g. the applicant already joined after approval).
+            var self = this;
+            list = list.filter(function(r) {
+                return !self.drives.some(function(d) { return d.drive_id === r.drive_id; });
+            });
+            this._myPendingRequests = list;
+            this.renderDriveList();
+        } catch (e) {
+            console.warn('[SYNC] loadMyJoinRequests failed', e);
+        }
+    },
+
+    // Real-time status update pushed by the backend when a host
+    // approves/rejects the applicant's join request. The payload carries
+    // { request_id, status, drive_name }. We refresh from the server so the
+    // card reflects the authoritative state.
+    _handleJoinRequestStatus(msg) {
+        var payload = msg.payload || {};
+        if (typeof payload === 'string') {
+            try { payload = JSON.parse(payload); } catch(e) { return; }
+        }
+        // BroadcastToUser puts extra fields at top level — merge msg + payload.
+        var status = payload.status || msg.status;
+        var driveName = payload.drive_name || msg.drive_name || '';
+        console.log('[SYNC] join_request_status: drive=' + msg.drive_id + ' status=' + status);
+
+        // Optimistically update the local pending card so the UI reacts
+        // instantly, then re-fetch authoritative state.
+        var driveId = msg.drive_id;
+        for (var i = 0; i < this._myPendingRequests.length; i++) {
+            if (this._myPendingRequests[i].drive_id === driveId) {
+                this._myPendingRequests[i].status = status;
+                if (driveName) {
+                    this._myPendingRequests[i].drive_name = driveName;
+                }
+                break;
+            }
+        }
+        this.renderDriveList();
+
+        if (status === 'approved') {
+            VXUI.showMsg(this._t('sync_join_approved_tip').replace('{name}', driveName || ''), 'success');
+        } else if (status === 'rejected') {
+            VXUI.showMsg(this._t('sync_join_rejected_tip').replace('{name}', driveName || ''), 'warn');
+        }
+
+        // Refresh notifications + authoritative pending list.
+        this.loadUnreadCount();
+        var self = this;
+        setTimeout(function() { self.loadMyJoinRequests(); }, 500);
+    },
+
+    // Enter a drive from an approved pending card. The applicant already has
+    // an approved join_request record, so drive_enter's permission check will
+    // pass without needing a drive_key.
+    async joinApprovedDrive(driveId) {
+        var req = this._myPendingRequests.find(function(r) { return r.drive_id === driveId; });
+        if (!req || req.status !== 'approved') {
+            VXUI.showMsg(this._t('sync_join_not_approved'), 'error');
+            return;
+        }
+        // Build a minimal drive object and inject it into this.drives so
+        // enterDrive() can find it.
+        var drive = {
+            drive_id: req.drive_id,
+            name: req.drive_name,
+            host_uid: req.host_uid,
+            host_device_id: req.host_device_id,
+            peer_count: 0,
+            peer_limit: 10,
+            host_online: req.host_online,
+            created_at: req.created_at,
+            server_addr: req.server_addr || ''
+        };
+        this.drives = this.drives.filter(function(d) { return d.drive_id !== drive.drive_id; });
+        this.drives.unshift(drive);
+        // Remove the pending card — the drive now appears as a normal card.
+        this._myPendingRequests = this._myPendingRequests.filter(function(r) { return r.drive_id !== driveId; });
+        this.renderDriveList();
+        // Enter the drive as a Peer.
+        this.enterDrive(driveId);
+    },
+
+    // Dismiss a rejected pending card from the drive list.
+    dismissMyPendingRequest(driveId) {
+        this._myPendingRequests = this._myPendingRequests.filter(function(r) { return r.drive_id !== driveId; });
+        this.renderDriveList();
+    },
+
     async createDrive(name) {
         this.trackUI('sync_create_drive');
         console.log('[SYNC] Creating drive: name="' + (name || '(default)') + '"');
@@ -1088,7 +1666,12 @@ var VX_SYNC = VX_SYNC || {
     },
     
     // ========== Bidirectional Sync: Peer → Host ==========
-    async sendPeerFileReport() {
+    // folderChanged: true when Peer just switched bound folder. In that case
+    // Peer's _peerLastPaths has been reset, so no deletions are detected; the
+    // flag tells Host to also reset its record of what Peer had, so Host does
+    // NOT propagate "missing on Peer" as deletions to itself. Instead Host's
+    // files are treated as new files Peer should download.
+    async sendPeerFileReport(folderChanged) {
         if (this.isHost) return;
         if (!this._boundFolder || !this._boundFolder.handle) {
             console.log('[SYNC] Peer has no bound folder, skipping file report');
@@ -1142,11 +1725,11 @@ var VX_SYNC = VX_SYNC || {
             // Record each detected deletion in activity list
             for (var di = 0; di < deletedFiles.length; di++) {
                 var dname = deletedFiles[di].split('/').pop();
-                this.addActivity('delete', dname + ' (\u672c\u673a)');
+                this.addActivity('delete', dname, { source: this._t('sync_this_device'), target: this._t('sync_role_host') });
             }
 
-            console.log('[SYNC] Peer sending file report to Host: ' + report.length + ' files, ' + deletedFiles.length + ' deleted');
-            this.sendP2PMessage('peer_file_report', this._getHostPersistentId(), { files: report, deleted: deletedFiles });
+            console.log('[SYNC] Peer sending file report to Host: ' + report.length + ' files, ' + deletedFiles.length + ' deleted' + (folderChanged ? ' (folder changed)' : ''));
+            this.sendP2PMessage('peer_file_report', this._getHostPersistentId(), { files: report, deleted: deletedFiles, folder_changed: !!folderChanged });
             // Persist state to .tmpsync/state.json
             this._saveSyncState();
         } catch (e) {
@@ -1211,7 +1794,11 @@ var VX_SYNC = VX_SYNC || {
                 files.forEach(function(f) { newPaths[f.sha1] = true; });
                 for (var di = 0; di < oldCache.length; di++) {
                     if (!newPaths[oldCache[di].sha1]) {
-                        self.addActivity('delete', oldCache[di].name + ' (\u672c\u673a)');
+                        self.addActivity('delete', oldCache[di].name, { source: self._t('sync_this_device'), target: self._t('sync_all_peers') });
+                        // Track as pending Host deletion to prevent race condition
+                        var delPath = (oldCache[di].parent_path === '/' ? '' : oldCache[di].parent_path) + '/' + oldCache[di].name;
+                        if (!self._hostPendingOps) self._hostPendingOps = {};
+                        self._hostPendingOps[delPath] = { op: 'delete', ts: Date.now() };
                     }
                 }
                 // Update Host's own file cache and UI
@@ -1261,7 +1848,7 @@ var VX_SYNC = VX_SYNC || {
                 // Record each detected deletion in activity list
                 for (var di = 0; di < deletedFiles.length; di++) {
                     var dname = deletedFiles[di].split('/').pop();
-                    this.addActivity('delete', dname + ' (\u672c\u673a)');
+                    this.addActivity('delete', dname, { source: this._t('sync_this_device'), target: this._t('sync_role_host') });
                 }
 
                 // Detect changes by comparing fingerprints
@@ -1491,6 +2078,12 @@ var VX_SYNC = VX_SYNC || {
             var r = records[i];
             var path = r.relativePathComponents || [];
             if (path.length > 0 && path[0] === '.tmpsync') continue;
+            // Skip ignored entries (system files, temp files, macOS metadata, etc.)
+            var skip = false;
+            for (var pi = 0; pi < path.length; pi++) {
+                if (this._isIgnoredEntry(path[pi], false)) { skip = true; break; }
+            }
+            if (skip) continue;
             hasExternalChange = true;
             break;
         }
@@ -1531,7 +2124,7 @@ var VX_SYNC = VX_SYNC || {
     //   - Only on Host + Peer deleted it → Host should also delete (propagate deletion)
     //   - Only on Peer + Host never had it → Peer uploads (new file)
     //   - Only on Peer + Host deleted it → Peer should also delete (propagate deletion)
-    async handlePeerFileReport(peerFiles, peerDeleted, fromDevice) {
+    async handlePeerFileReport(peerFiles, peerDeleted, fromDevice, folderChanged) {
         if (!this.isHost) return;
         if (!this._boundFolder || !this._boundFolder.handle) {
             console.log('[SYNC] Host has no bound folder, skipping delta computation');
@@ -1576,8 +2169,12 @@ var VX_SYNC = VX_SYNC || {
                 peerMap[pf.path] = pf;
             }
 
-            // Build set of Peer paths that existed last sync
-            var peerHadPath = this._peerLastPaths || {};
+            // Build set of Peer paths that existed last sync.
+            // When Peer just switched folders, Host must NOT propagate "missing
+            // on Peer" as deletions to itself — the files are only missing
+            // because Peer bound a fresh folder. Reset the record so Host's
+            // files are treated as new files Peer should download instead.
+            var peerHadPath = folderChanged ? {} : (this._peerLastPaths || {});
             // Build set of Host paths that existed last sync
             var hostHadPath = this._hostLastPaths || {};
 
@@ -1589,14 +2186,18 @@ var VX_SYNC = VX_SYNC || {
             var inSync = 0;
 
             // 1. Process Peer-reported deletions: Host should delete these too.
-            // Build a set for fast lookup so step 2 can skip already-handled paths.
+            // Skip this entirely when Peer just switched folders — the
+            // "deletions" are an artifact of the folder change, not real
+            // deletions. Build the set for step 2 lookup regardless.
             var peerDeletedSet = {};
-            (peerDeleted || []).forEach(function(delPath) {
-                peerDeletedSet[delPath] = true;
-                if (hostMap[delPath]) {
-                    deleteOnHost.push(hostMap[delPath]);
-                }
-            });
+            if (!folderChanged) {
+                (peerDeleted || []).forEach(function(delPath) {
+                    peerDeletedSet[delPath] = true;
+                    if (hostMap[delPath]) {
+                        deleteOnHost.push(hostMap[delPath]);
+                    }
+                });
+            }
 
             // 2. Collect all unique file paths from both sides
             var allPaths = {};
@@ -1622,11 +2223,17 @@ var VX_SYNC = VX_SYNC || {
                         download.push(hf);
                     }
                 } else if (!hf && pf) {
-                    // File is on Peer but not on Host
-                    if (hostHadPath[filePath]) {
-                        // Host had this file before but not now → Host deleted it
-                        // Peer should also delete (propagate deletion)
+                    // File is on Peer but not on Host.
+                    // Check Host's pending operations first — if Host deleted/renamed/moved
+                    // this file, the operation takes precedence over Peer's state.
+                    var pendingOp = self._hostPendingOps && self._hostPendingOps[filePath];
+                    if (hostHadPath[filePath] || (pendingOp && pendingOp.op === 'delete')) {
+                        // Host had/deleted this file → Peer should also delete
                         deleteOnPeer.push({ path: filePath, name: pf.name, parent_path: pf.parent_path, sha1: pf.sha1 });
+                    } else if (pendingOp && (pendingOp.op === 'rename' || pendingOp.op === 'move')) {
+                        // Host renamed/moved this file → Peer will get the update via sync_delta,
+                        // don't treat the old path as a new file to upload
+                        console.log('[SYNC] Skipping pending ' + pendingOp.op + ' path: ' + filePath);
                     } else {
                         // Host never had this file → new file, Peer should upload
                         upload.push(pf);
@@ -1663,6 +2270,52 @@ var VX_SYNC = VX_SYNC || {
             for (var p in peerMap) peerCurrentPaths[p] = true;
             this._peerLastPaths = peerCurrentPaths;
 
+            // ===== 初始化规则（folderChanged）=====
+            // Peer 刚绑定/更换文件夹时，以主机数据为准完成初始化：
+            // - download（主机→Peer）：保留
+            // - deleteOnPeer（主机删除的文件）：保留（Peer 同步删除以匹配主机）
+            // - upload（Peer→主机）：抑制（初始化期间不推送本地文件到主机）
+            // - deleteOnHost（Peer 删除的文件）：抑制（不因 Peer 状态删除主机文件）
+            // - conflict：转为 download（主机版本优先）
+            // 初始化完成后的下一次 peer_file_report（folderChanged=false）恢复正常双向同步
+            if (folderChanged) {
+                console.log('[SYNC] Init sync (folder_changed): suppressing upload/conflict/deleteOnHost — Host→Peer only');
+                // 冲突文件以主机版本为准 → 转为 download
+                for (var ci = 0; ci < conflict.length; ci++) {
+                    download.push({
+                        sha1: conflict[ci].sha1,
+                        name: conflict[ci].name,
+                        size: conflict[ci].host_size,
+                        mtime: conflict[ci].host_mtime,
+                        parent_path: conflict[ci].parent_path
+                    });
+                }
+                conflict = [];
+                upload = [];
+                deleteOnHost = [];
+            }
+
+            // Track Host-initiated deletions as pending — prevents race condition
+            // where Peer reports the file still exists before completing the delete.
+            if (!this._hostPendingOps) this._hostPendingOps = {};
+            for (var di = 0; di < deleteOnPeer.length; di++) {
+                var dp = deleteOnPeer[di];
+                this._hostPendingOps[dp.path] = { op: 'delete', ts: Date.now() };
+            }
+
+            // Clean up resolved pending ops: paths no longer on either side
+            for (var opPath in this._hostPendingOps) {
+                var op = this._hostPendingOps[opPath];
+                if (op.op === 'delete' && !peerMap[opPath] && !hostMap[opPath]) {
+                    console.log('[SYNC] Host pending delete resolved: ' + opPath);
+                    delete this._hostPendingOps[opPath];
+                }
+                if ((op.op === 'rename' || op.op === 'move') && !peerMap[opPath]) {
+                    console.log('[SYNC] Host pending ' + op.op + ' resolved: ' + opPath);
+                    delete this._hostPendingOps[opPath];
+                }
+            }
+
             // Execute Host-side deletions
             var peerSource = this._getDeviceDisplayName(fromDevice) || '';
             for (var i = 0; i < deleteOnHost.length; i++) {
@@ -1672,7 +2325,7 @@ var VX_SYNC = VX_SYNC || {
             }
 
             var totalWork = download.length + upload.length + conflict.length + deleteOnPeer.length + deleteOnHost.length;
-            console.log('[SYNC] Dropbox delta: dl=' + download.length + ' ul=' + upload.length + ' conflict=' + conflict.length + ' delPeer=' + deleteOnPeer.length + ' delHost=' + deleteOnHost.length + ' inSync=' + inSync);
+            console.log('[SYNC] Dropbox delta: dl=' + download.length + ' ul=' + upload.length + ' conflict=' + conflict.length + ' delPeer=' + deleteOnPeer.length + ' delHost=' + deleteOnHost.length + ' inSync=' + inSync + (folderChanged ? ' [INIT]' : ''));
 
             // Only send delta if there's actual work to do
             if (totalWork === 0) {
@@ -1688,17 +2341,16 @@ var VX_SYNC = VX_SYNC || {
                 delete_on_peer: deleteOnPeer
             });
 
-            if (download.length > 0) {
-                this.addActivity('sync_push', this._t('sync_act_push_to_peer').replace('{n}', download.length));
-            }
-            if (upload.length > 0) {
-                this.addActivity('sync_pull', this._t('sync_act_wait_peer_upload').replace('{n}', upload.length));
-            }
+            // Only log deletion activities — download/upload are internal sync
+            // operations tracked by 'sync_received' and 'upload' activities on
+            // the Peer side. Showing 'sync_push'/'sync_pull' here is misleading
+            // because they fire on every delta cycle (including echo reports
+            // where Peer re-reports files it just received from Host).
             if (deleteOnHost.length > 0) {
-                this.addActivity('sync_delete', this._t('sync_act_host_delete').replace('{n}', deleteOnHost.length));
+                this.addActivity('sync_delete', this._t('sync_act_host_delete').replace('{n}', deleteOnHost.length), { source: peerSource, target: this._t('sync_this_device') });
             }
             if (deleteOnPeer.length > 0) {
-                this.addActivity('sync_delete', this._t('sync_act_notify_peer_delete').replace('{n}', deleteOnPeer.length));
+                this.addActivity('sync_delete', this._t('sync_act_notify_peer_delete').replace('{n}', deleteOnPeer.length), { source: this._t('sync_this_device'), target: this._t('sync_all_peers') });
             }
         } catch (e) {
             console.error('[SYNC] handlePeerFileReport failed:', e);
@@ -2506,6 +3158,9 @@ var VX_SYNC = VX_SYNC || {
             // Peer: update loading progress — DataChannel is open, now waiting for file list
             if (!this.isHost) {
                 this.updateLoadingProgress('正在同步文件列表...', '直连通道已建立', 60);
+                // 全局 toast：Peer 连接成功（覆盖重连场景，初次连接也提示）
+                var driveName = (this.currentDrive && (this.currentDrive.name || this.currentDrive.drive_name)) || '';
+                VX_SYNC.toastSuccess(VX_SYNC._t('sync_toast_connected_to_host').replace('{name}', driveName));
             }
 
             // Start DataChannel keepalive to prevent TURN TCP idle timeout.
@@ -2713,7 +3368,13 @@ var VX_SYNC = VX_SYNC || {
                     this.hideProgress();
                     this.updateTransferStats();
                     this._removeTransferActivity(dlSha1);
-                    this.addActivity(dlMeta.sync ? 'sync_received' : 'download', dlName);
+                    var dlSource = this.isHost
+                        ? ((this._peerConnections[download.peerDeviceId] && this._peerConnections[download.peerDeviceId].displayName) || download.peerDeviceId || '')
+                        : this._t('sync_role_host');
+                    var dlMode = this.isHost
+                        ? ((this._peerConnections[download.peerDeviceId] && this._peerConnections[download.peerDeviceId].mode) || 'unknown')
+                        : (this._hostConnectionMode || 'unknown');
+                    this.addActivity(dlMeta.sync ? 'sync_received' : 'download', dlName, { source: dlSource, target: this._t('sync_this_device'), mode: dlMode });
                     console.log('[SYNC] Download complete: ' + dlName + ' chunks=' + chunkCount + ' size=' + dlSize + ' sync=' + !!dlMeta.sync);
                 }
                 break;
@@ -2764,6 +3425,11 @@ var VX_SYNC = VX_SYNC || {
     },
     
     async uploadFile(file) {
+        if (!this._currentUserHasWritePermission()) {
+            console.warn('[SYNC] uploadFile blocked: read-only permission');
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         console.log('[SYNC] Uploading file: ' + file.name + ' size=' + file.size);
         const sha1 = await this.calculateSHA1(file);
         const metadata = {
@@ -2783,7 +3449,7 @@ var VX_SYNC = VX_SYNC || {
         this._transferLastTime = Date.now();
         this._transferSpeed = 0;
         var uploadMode = this.isHost ? 'local' : (this._hostConnectionMode || 'unknown');
-        this.upsertTransferActivity('upload', file.name, sha1, 0, '', uploadMode, '');
+        this.upsertTransferActivity('upload', file.name, sha1, 0, '', uploadMode, this.isHost ? '' : this._t('sync_role_host'));
         
         const CHUNK_SIZE = this.CHUNK_SIZE;
         var totalChunks = Math.ceil(file.size / CHUNK_SIZE);
@@ -2803,7 +3469,7 @@ var VX_SYNC = VX_SYNC || {
                 self._transferStats.bytesUploaded += file.size;
                 self.hideProgress();
                 self._removeTransferActivity(sha1);
-                self.addActivity('upload', metadata.name);
+                self.addActivity('upload', metadata.name, { source: self._t('sync_this_device'), target: self._t('sync_role_host'), mode: self._hostConnectionMode || 'unknown' });
                 console.log('[SYNC] Upload complete: ' + file.name + ' size=' + file.size + ' chunks=' + chunkIndex);
                 return;
             }
@@ -2827,7 +3493,7 @@ var VX_SYNC = VX_SYNC || {
                     console.warn('[SYNC] DC closed during backpressure at chunk ' + (chunkIndex + 1));
                     self.hideProgress();
                     self._removeTransferActivity(sha1);
-                    self.addActivity('upload', '发送中断: ' + metadata.name);
+                    self.addActivity('upload', '\u53d1\u9001\u4e2d\u65ad: ' + metadata.name, { source: self._t('sync_this_device'), target: self._t('sync_role_host'), mode: self._hostConnectionMode || 'unknown' });
                     return;
                 }
                 self.acceptDC.send(buffer);
@@ -2858,6 +3524,10 @@ var VX_SYNC = VX_SYNC || {
     // Peer: upload a file from local folder to Host (bidirectional sync)
     async uploadFileToHost(sha1, meta) {
         if (this.isHost) return;
+        if (!this._currentUserHasWritePermission()) {
+            console.warn('[SYNC] uploadFileToHost blocked: read-only permission');
+            return;
+        }
         if (!this._boundFolder || !this._boundFolder.handle) {
             console.warn('[SYNC] uploadFileToHost: no bound folder');
             return;
@@ -2957,7 +3627,7 @@ var VX_SYNC = VX_SYNC || {
             this._transferStats.bytesUploaded += file.size;
             this.hideProgress();
             this._removeTransferActivity(sha1);
-            this.addActivity('sync_upload', file.name);
+            this.addActivity('sync_upload', file.name, { source: this._t('sync_this_device'), target: this._t('sync_role_host'), mode: this._hostConnectionMode || 'unknown' });
             console.log('[SYNC] uploadFileToHost complete: ' + file.name + ' chunks=' + totalChunks);
         } catch (e) {
             console.warn('[SYNC] uploadFileToHost failed for ' + meta.name + ':', e);
@@ -3033,11 +3703,16 @@ var VX_SYNC = VX_SYNC || {
             }
 
             // Upload: Peer should send these files to Host
-            (delta.upload || []).forEach(function(item) {
-                var sha1 = item.sha1;
-                console.log('[SYNC] Need to upload to Host:', sha1);
-                self._enqueueUpload({ sha1: sha1, meta: item });
-            });
+            // Skip uploads for read-only peers — they cannot write to the host
+            if (self._currentUserHasWritePermission()) {
+                (delta.upload || []).forEach(function(item) {
+                    var sha1 = item.sha1;
+                    console.log('[SYNC] Need to upload to Host:', sha1);
+                    self._enqueueUpload({ sha1: sha1, meta: item });
+                });
+            } else if ((delta.upload || []).length > 0) {
+                console.warn('[SYNC] Skipping ' + delta.upload.length + ' upload(s) — read-only permission');
+            }
 
             // Delete: Peer should delete these files (Host deleted them)
             (delta.delete_on_peer || []).forEach(function(item) {
@@ -3059,7 +3734,7 @@ var VX_SYNC = VX_SYNC || {
             });
 
             if (dlCount > 0 || upCount > 0 || delCount > 0) {
-                self.addActivity('sync_delta', '下载 ' + dlCount + ' / 上传 ' + upCount + ' / 删除 ' + delCount + ' / 冲突 ' + cfCount);
+                self.addActivity('sync_delta', '\u4e0b\u8f7d ' + dlCount + ' / \u4e0a\u4f20 ' + upCount + ' / \u5220\u9664 ' + delCount + ' / \u51b2\u7a81 ' + cfCount, { source: self._t('sync_role_host'), target: self._t('sync_this_device') });
                 // Re-render file list to show sync status
                 self.renderFileList(Array.from(self.fileCache.values()));
             }
@@ -3134,19 +3809,8 @@ var VX_SYNC = VX_SYNC || {
         const container = document.getElementById('sync-drives');
         if (!container) return;
 
-        // Update drive creation quota display
-        var quotaEl = document.getElementById('sync-drive-quota');
         var driveCount = this.drives.length;
         var driveLimit = this._getDriveLimit();
-        if (quotaEl) {
-            var totalPeers = 0;
-            for (var i = 0; i < this.drives.length; i++) {
-                totalPeers += (this.drives[i].peer_count || 0);
-            }
-            var peerLimit = this._getPeerLimit();
-            quotaEl.innerHTML = '<span class="vx-sync-quota-row"><span class="vx-sync-quota-label">' + (typeof TL !== 'undefined' && TL.tpl_lang ? '' : '') + this._t('sync_quota_drives_label') + '</span><span class="vx-sync-quota-value">' + driveCount + '/' + driveLimit + '</span></span><span class="vx-sync-quota-row"><span class="vx-sync-quota-label">' + this._t('sync_quota_peers_label') + '</span><span class="vx-sync-quota-value">' + totalPeers + '/' + peerLimit + '</span></span>';
-            quotaEl.style.display = '';
-        }
         // Disable create button when limit reached
         var createBtns = document.querySelectorAll('[onclick="VX_SYNC.showCreateDrive()"]');
         var limitReached = (driveCount >= driveLimit);
@@ -3163,7 +3827,9 @@ var VX_SYNC = VX_SYNC || {
             return;
         }
 
-        if (this.drives.length === 0) {
+        var pendingRequests = this._myPendingRequests || [];
+
+        if (this.drives.length === 0 && pendingRequests.length === 0) {
             container.innerHTML = `
                 <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;text-align:center;grid-column:1/-1">
                     <iconpark-icon name="link-cloud" size="48" style="color:var(--vx-text-muted);margin-bottom:16px"></iconpark-icon>
@@ -3171,19 +3837,39 @@ var VX_SYNC = VX_SYNC || {
                 </div>`;
             return;
         }
-        
+
+        var self = this;
+        var pendingCardsHtml = pendingRequests.map(function(req) {
+            return self._renderPendingRequestCard(req);
+        }).join('');
+
         container.innerHTML = this.drives.map(drive => {
             var myDeviceId = this.getDeviceId();
             var isHost = (drive.host_device_id && drive.host_device_id === myDeviceId);
             var hostOnline = (drive.host_online === 1 || drive.host_online === true);
             var deleteLabel = isHost ? this._t('sync_delete_drive_title') : this._t('sync_delete_drive_leave');
-            var roleTag = isHost
-                ? '<span class="vx-sync-drive-tag vx-sync-drive-tag-host">' + this._t('sync_role_host') + '</span>'
-                : '<span class="vx-sync-drive-tag vx-sync-drive-tag-peer">' + this._t('sync_role_peer') + '</span>';
 
-            // Action button depending on role
+            // 多 session 状态：本 tab 已运行 / 其它 tab 已占用 / 空闲
+            var inThisTab = this.sessions.has(drive.drive_id);
+            var lockedByOtherTab = !inThisTab && !!this._localDriveLocks[drive.drive_id];
+
+            // Action button depending on role & lock state
             var actionHtml;
-            if (isHost) {
+            var cardOnClick = 'VX_SYNC.enterDrive(\'' + drive.drive_id + '\')';
+            if (lockedByOtherTab) {
+                // 其它 tab 已占用：禁用按钮，卡片点击提示
+                cardOnClick = 'VX_SYNC._showLockedByOtherTabHint(\'' + drive.drive_id + '\')';
+                actionHtml = '<button class="vx-btn vx-btn-primary vx-btn-sm vx-sync-drive-action" disabled title="' + this._t('sync_running_in_other_tab') + '">' +
+                    '<iconpark-icon name="lock"></iconpark-icon>' +
+                    '<span>' + this._t('sync_running_in_other_tab') + '</span>' +
+                    '</button>';
+            } else if (inThisTab) {
+                // 本 tab 已运行：按钮显示"进入"
+                actionHtml = '<button class="vx-btn vx-btn-primary vx-btn-sm vx-sync-drive-action" onclick="VX_SYNC.enterDrive(\'' + drive.drive_id + '\'); event.stopPropagation();" title="' + this._t('sync_enter_session') + '">' +
+                    '<iconpark-icon name="forward"></iconpark-icon>' +
+                    '<span>' + this._t('sync_enter_session') + '</span>' +
+                    '</button>';
+            } else if (isHost) {
                 // Host: show "启动服务器" button (no online/offline status)
                 actionHtml = '<button class="vx-btn vx-btn-primary vx-btn-sm vx-sync-drive-action" onclick="VX_SYNC.enterDrive(\'' + drive.drive_id + '\'); event.stopPropagation();" title="' + this._t('sync_start_server') + '">' +
                     '<iconpark-icon name="play"></iconpark-icon>' +
@@ -3200,7 +3886,12 @@ var VX_SYNC = VX_SYNC || {
 
             // Build role tag with online/offline status for Peer role
             var roleTagHtml;
-            if (isHost) {
+            if (inThisTab) {
+                // 本 tab 运行中：显示"运行中"标签
+                roleTagHtml = '<span class="vx-sync-drive-tag vx-sync-drive-tag-running">' + this._t('sync_running_in_session') + '</span>';
+            } else if (lockedByOtherTab) {
+                roleTagHtml = '<span class="vx-sync-drive-tag vx-sync-drive-tag-locked">' + this._t('sync_running_in_other_tab') + '</span>';
+            } else if (isHost) {
                 roleTagHtml = '<span class="vx-sync-drive-tag vx-sync-drive-tag-host">' + this._t('sync_role_host') + '</span>';
             } else {
                 var dotCls = 'vx-sync-host-dot ' + (hostOnline ? 'online' : 'offline');
@@ -3210,7 +3901,14 @@ var VX_SYNC = VX_SYNC || {
                     '<span class="' + statusTagCls + '"><span class="' + dotCls + '"></span>' + statusLabel + '</span>';
             }
 
-            return '<div class="vx-sync-drive-card" onclick="VX_SYNC.enterDrive(\'' + drive.drive_id + '\')">' +
+            // Check if this is a shared drive (user is not the owner)
+            var isShared = !isHost && String(drive.host_uid) !== String(TL.uid);
+            var sharedTagHtml = isShared ? '<span class="vx-sync-drive-tag-shared">' + this._t('sync_shared') + '</span>' : '';
+
+            var cardCls = 'vx-sync-drive-card';
+            if (lockedByOtherTab) cardCls += ' vx-sync-drive-card-locked';
+
+            return '<div class="' + cardCls + '" onclick="' + cardOnClick + '">' +
                 '<button class="vx-sync-drive-delete-btn" onclick="VX_SYNC.promptDeleteDrive(\'' + drive.drive_id + '\', event)" title="' + deleteLabel + '">' +
                     '<iconpark-icon name="trash"></iconpark-icon>' +
                 '</button>' +
@@ -3219,7 +3917,7 @@ var VX_SYNC = VX_SYNC || {
                         '<iconpark-icon name="network-drive" size="28"></iconpark-icon>' +
                     '</div>' +
                     '<div class="vx-sync-drive-head-text">' +
-                        '<h3>' + this.escapeHtml(drive.name || this._t('sync_drive_unnamed')) + '</h3>' +
+                        '<h3>' + this.escapeHtml(drive.name || this._t('sync_drive_unnamed')) + ' ' + sharedTagHtml + '</h3>' +
                         '<div class="vx-sync-drive-meta">' +
                             '<span>' + (drive.peer_count || 0) + '/' + (drive.peer_limit || 10) + ' ' + this._t('sync_lobby_nodes') + '</span>' +
                             '<span class="vx-sync-drive-meta-sep">·</span>' +
@@ -3232,8 +3930,76 @@ var VX_SYNC = VX_SYNC || {
                     '<div class="vx-sync-drive-action-area">' + actionHtml + '</div>' +
                 '</div>' +
             '</div>';
-        }).join('');
+        }).join('') + pendingCardsHtml;
     },
+
+    // Render a pending-review card for one of the applicant's own join
+    // requests. Card states: pending (审核中) / approved (可加入) / rejected (已拒绝).
+    _renderPendingRequestCard(req) {
+        var driveName = this.escapeHtml(req.drive_name || this._t('sync_drive_unnamed'));
+        var created = this.formatDate(req.created_at);
+        var status = req.status || 'pending';
+
+        var statusBadgeHtml;
+        var actionHtml;
+        var cardCls = 'vx-sync-drive-card vx-sync-drive-card-pending';
+
+        if (status === 'approved') {
+            cardCls += ' vx-sync-drive-card-approved';
+            statusBadgeHtml = '<span class="vx-sync-drive-tag vx-sync-drive-tag-approved">' + this._t('sync_join_status_approved') + '</span>';
+            actionHtml = '<button class="vx-btn vx-btn-primary vx-btn-sm vx-sync-drive-action" onclick="VX_SYNC.joinApprovedDrive(\'' + req.drive_id + '\'); event.stopPropagation();" title="' + this._t('sync_join_now') + '">' +
+                '<iconpark-icon name="link"></iconpark-icon>' +
+                '<span>' + this._t('sync_join_now') + '</span>' +
+                '</button>';
+        } else if (status === 'rejected') {
+            cardCls += ' vx-sync-drive-card-rejected';
+            statusBadgeHtml = '<span class="vx-sync-drive-tag vx-sync-drive-tag-rejected">' + this._t('sync_join_status_rejected') + '</span>';
+            actionHtml = '<button class="vx-btn vx-btn-ghost vx-btn-sm vx-sync-drive-action" onclick="VX_SYNC.dismissMyPendingRequest(\'' + req.drive_id + '\'); event.stopPropagation();" title="' + this._t('sync_dismiss') + '">' +
+                '<span>' + this._t('sync_dismiss') + '</span>' +
+                '</button>';
+        } else {
+            // pending
+            statusBadgeHtml = '<span class="vx-sync-drive-tag vx-sync-drive-tag-pending">' + this._t('sync_join_status_pending') + '</span>';
+            actionHtml = '<button class="vx-btn vx-btn-ghost vx-btn-sm vx-sync-drive-action" disabled title="' + this._t('sync_join_status_pending') + '">' +
+                '<iconpark-icon name="clock"></iconpark-icon>' +
+                '<span>' + this._t('sync_join_status_pending') + '</span>' +
+                '</button>';
+        }
+
+        var permLabel = req.permission === 'read_write' ? this._t('sync_permission_write') : this._t('sync_permission_read');
+        var metaHtml = '<span>' + permLabel + '</span>' +
+            '<span class="vx-sync-drive-meta-sep">·</span>' +
+            '<span>' + created + '</span>';
+
+        return '<div class="' + cardCls + '" onclick="VX_SYNC._pendingCardClick(\'' + req.drive_id + '\',\'' + status + '\')">' +
+            '<div class="vx-sync-drive-card-head">' +
+                '<div class="vx-sync-drive-icon">' +
+                    '<iconpark-icon name="network-drive" size="28"></iconpark-icon>' +
+                '</div>' +
+                '<div class="vx-sync-drive-head-text">' +
+                    '<h3>' + driveName + ' ' + statusBadgeHtml + '</h3>' +
+                    '<div class="vx-sync-drive-meta">' + metaHtml + '</div>' +
+                '</div>' +
+            '</div>' +
+            '<div class="vx-sync-drive-foot">' +
+                '<span class="vx-sync-drive-pending-hint">' + this._t('sync_join_pending_hint') + '</span>' +
+                '<div class="vx-sync-drive-action-area">' + actionHtml + '</div>' +
+            '</div>' +
+        '</div>';
+    },
+
+    // Click handler for pending cards: only approved cards enter the drive.
+    _pendingCardClick(driveId, status) {
+        if (status === 'approved') {
+            this.joinApprovedDrive(driveId);
+        }
+    },
+
+    // 卡片被其它 tab 占用时，点击提示用户
+    _showLockedByOtherTabHint(driveId) {
+        VXUI.showMsg(this._t('sync_drive_locked_other_tab_hint'), 'warn');
+    },
+
     
     renderDetail() {
         document.getElementById('sync-drive-list').style.display = 'none';
@@ -3556,7 +4322,85 @@ var VX_SYNC = VX_SYNC || {
         this.hideCreateDrive();
         await this.createDrive(name);
     },
-    
+
+    // ========== Join Drive with Invite Code ==========
+
+    showJoinDrive() {
+        this.trackUI('sync_show_join');
+        document.getElementById('sync-join-modal').style.display = 'flex';
+        document.getElementById('sync-join-invite-code').value = '';
+    },
+
+    hideJoinDrive() {
+        document.getElementById('sync-join-modal').style.display = 'none';
+    },
+
+    async doJoinDrive() {
+        const inviteCode = document.getElementById('sync-join-invite-code').value.trim();
+        if (!inviteCode) {
+            VXUI.showMsg('请输入邀请码', 'error');
+            return;
+        }
+
+        try {
+            const resp = await this.wsRequest('join_request_apply', {
+                invite_code: inviteCode,
+                applicant_name: this.deviceName || this.deviceID,
+            });
+            if (resp.status !== 1) return;
+            VXUI.showMsg(this._t('sync_join_request_submitted'), 'success');
+            this.hideJoinDrive();
+
+            // Immediately render a "审核中" card from the response data so
+            // the applicant gets instant feedback without waiting for
+            // loadMyJoinRequests to round-trip.
+            var data = resp.data || {};
+            var request = data.request || {};
+            var drive = data.drive || {};
+            var pendingItem = {
+                id: request.id,
+                drive_id: request.drive_id || drive.drive_id,
+                drive_name: drive.drive_name || drive.name || '',
+                host_uid: drive.host_uid,
+                host_device_id: drive.host_device_id,
+                host_online: drive.host_online,
+                server_addr: drive.server_addr || '',
+                permission: request.permission,
+                status: request.status || 'pending',
+                created_at: request.created_at || new Date().toISOString().replace('T', ' ').substring(0, 19)
+            };
+            // Avoid duplicates (re-applying for the same drive).
+            this._myPendingRequests = this._myPendingRequests.filter(function(r) {
+                return r.drive_id !== pendingItem.drive_id;
+            });
+            this._myPendingRequests.unshift(pendingItem);
+            this.renderDriveList();
+
+            // Re-fetch authoritative state in the background.
+            this.loadMyJoinRequests();
+        } catch (e) {
+            console.error('join request failed', e);
+            VXUI.showMsg('请求失败，请重试', 'error');
+        }
+    },
+
+    // ========== Main Tab Switching ==========
+
+    switchMainTab(tab) {
+        this._mainTab = tab;
+        this.trackUI('sync_main_tab_' + tab);
+
+        document.querySelectorAll('.vx-sync-main-tab').forEach(function(btn) {
+            btn.classList.toggle('active', btn.dataset.tab === tab);
+        });
+        document.getElementById('sync-main-view-drives').style.display = tab === 'drives' ? 'block' : 'none';
+        document.getElementById('sync-main-view-messages').style.display = tab === 'messages' ? 'block' : 'none';
+
+        if (tab === 'messages') {
+            this.loadNotifications();
+        }
+    },
+
     _showMobileTopbar() {
         var topbar = document.getElementById('sync-mob-topbar');
         if (topbar) topbar.style.display = '';
@@ -3581,27 +4425,50 @@ var VX_SYNC = VX_SYNC || {
 
         this.trackUI('sync_enter_drive');
         console.log('[SYNC] Entering drive: id=' + driveId + ' name=' + (drive.name || drive.drive_name || '(unnamed)') + ' host_device=' + (drive.host_device_id || 'none') + ' my_device=' + this.getDeviceId());
-        this.showLoading('正在加载同步盘信息...');
 
-        if (this.currentDrive && this.currentDrive.drive_id !== driveId) {
-            console.log('[SYNC] Leaving current drive to enter new one');
-            this._cleanupConnection();
-            this._boundFolder = null;
+        // 若该 drive 已有 session，直接切换（多 session 并行场景）
+        if (this.sessions.has(driveId)) {
+            console.log('[SYNC] Session already exists for ' + driveId + ', switching');
+            this.switchSession(driveId);
+            return;
         }
 
-        this.currentDrive = drive;
-        this.fileCache.clear();
-        this.currentPath = '/';
-        this.peers = [];
+        this.showLoading('正在加载同步盘信息...');
 
         // Determine Host by device_id: only the device that created the drive is Host.
-        // This prevents same-user different-device from acting as Host.
         var myDeviceId = this.getDeviceId();
         var hostDeviceId = drive.host_device_id || '';
-        this.isHost = (hostDeviceId !== '' && hostDeviceId === myDeviceId);
-        console.log('[SYNC] Role check: my_device=' + myDeviceId + ' host_device=' + hostDeviceId + ' → isHost=' + this.isHost);
+        var isHost = (hostDeviceId !== '' && hostDeviceId === myDeviceId);
+        var role = isHost ? 'host' : 'peer';
+        console.log('[SYNC] Role check: my_device=' + myDeviceId + ' host_device=' + hostDeviceId + ' → isHost=' + isHost);
 
-        this._hostOnline = this.isHost ? true : (drive.host_online === 1 || drive.host_online === true);
+        // 创建新 session 并设为活跃
+        var session = this.createSession(drive, role);
+        this.activeSessionId = driveId;
+
+        // 同步镜像字段（旧代码通过 this.xxx 访问）
+        this.currentDrive = drive;
+        this.isHost = isHost;
+        this._boundFolder = null;
+        this.fileCache = session.fileCache;
+        this.currentPath = '/';
+        this.peers = session.peers;
+        this._hostOnline = isHost ? true : (drive.host_online === 1 || drive.host_online === true);
+
+        // 权限设置：所有者始终 read_write
+        var isOwner = this._isDriveOwner(drive);
+        if (isHost || isOwner) {
+            session.permission = 'read_write';
+            this._currentDrivePermission = 'read_write';
+        } else {
+            session.permission = drive.permission || null;
+            this._currentDrivePermission = session.permission;
+        }
+        var permTab = document.getElementById('sync-tab-permissions');
+        if (permTab) {
+            permTab.style.display = (isHost || isOwner) ? 'flex' : 'none';
+        }
+
         if (drive.server_addr) this.serverAddr = drive.server_addr;
 
         this.hideLoading();
@@ -3610,46 +4477,59 @@ var VX_SYNC = VX_SYNC || {
         // the notification WS was connected (e.g., during reconnection).
         this.pollP2PMessages();
 
-        // Peer: if Host is offline, register with server for presence
-        // notifications (so we know when Host comes online), then show lobby.
-        // Without drive_enter, the Peer is invisible to the server's drive
-        // state and will never receive the 'presence(host, online)' push.
-        if (!this.isHost && !this._hostOnline) {
+        // Peer: Host 离线时注册 presence 并显示 lobby
+        if (!isHost && !this._hostOnline) {
             console.log('[SYNC] Host offline, registering for presence and showing lobby');
             if (this.signalingWS && this.signalingWS.readyState === WebSocket.OPEN) {
                 this.wsRequest('drive_enter', {
-                    drive_id: this.currentDrive.drive_id,
-                    device_id: this.getDeviceId(),
+                    drive_id: driveId,
+                    device_id: myDeviceId,
                     device_name: this.deviceName || ''
                 }, true);
             }
             this.showLobby();
+            this._renderSessionSwitcher();
             return;
         }
 
-        var self = this;
         // Try to restore folder binding from IndexedDB
         var folderName = await this._restoreAndBindFolder(driveId);
 
         if (this._boundFolder && this._boundFolder.handle) {
-            // Folder restored with permission → directly connect
-            console.log('[SYNC] Folder restored: ' + folderName + ', auto-connecting');
+            // Folder restored → 获取锁后连接
+            console.log('[SYNC] Folder restored: ' + folderName + ', acquiring lock and connecting');
+            session.boundFolder = this._boundFolder;
+            var locked = await this._acquireFolderLock(session);
+            if (!locked) {
+                VXUI.showMsg(this._t('sync_folder_locked_other_tab'), 'warning');
+                this._boundFolder = null;
+                session.boundFolder = null;
+                this.showLobby();
+                this._renderSessionSwitcher();
+                return;
+            }
+            this._bcast('drive_locked', {
+                drive_id: driveId,
+                role: role,
+                folder_name: session.boundFolder.name
+            });
             this._updateFolderPathDisplay();
-            if (this.isHost) {
+            if (isHost) {
                 this.startServer();
             } else {
                 this.connectToHost();
             }
         } else {
-            // No folder bound or permission needed → prompt folder picker, then connect
+            // No folder bound → 提示用户选择（selectFolder 中会获取锁）
             console.log('[SYNC] No folder binding, prompting user to select');
             this._updateFolderPathDisplay();
-            if (this.isHost) {
+            if (isHost) {
                 this.startServer();
             } else {
                 this.connectToHost();
             }
         }
+        this._renderSessionSwitcher();
     },
 
     showLobby() {
@@ -3858,11 +4738,16 @@ var VX_SYNC = VX_SYNC || {
             t.classList.toggle('active', t.getAttribute('data-tab') === tab);
         });
         // Show only the active list view
-        var views = ['files', 'peers', 'activity'];
+        var views = ['files', 'permissions', 'peers', 'activity'];
         views.forEach(function(v) {
             var el = document.getElementById('sync-view-' + v);
             if (el) el.style.display = (v === tab) ? '' : 'none';
         });
+        // Load permissions data when entering permissions tab
+        if (tab === 'permissions') {
+            this.loadInviteCodes();
+            this.loadJoinRequests();
+        }
     },
 
     // Update role badges (no longer shown in UI, kept for compatibility)
@@ -3983,6 +4868,7 @@ var VX_SYNC = VX_SYNC || {
                         }
                     }
                     this.addActivity('host_online', displayName + ' 已上线');
+                    this.toastSuccess(this._t('sync_toast_host_online').replace('{name}', displayName));
                 }
                 // If Host went offline and we're a Peer, immediately enter the
                 // waiting-for-host state. The notification WS push delivers this
@@ -4017,6 +4903,7 @@ var VX_SYNC = VX_SYNC || {
                     }
                     this._reconnectAttempt = 0;
                     this.addActivity('host_offline', displayName + ' 已离线');
+                    this.toastWarning(this._t('sync_toast_host_offline').replace('{name}', displayName));
                 }
             } else {
                 // Peer online/offline — update node count display
@@ -4046,6 +4933,7 @@ var VX_SYNC = VX_SYNC || {
                 }
                 if (isOnline) {
                     this.addActivity('peer_join', displayName + ' 已加入');
+                    this.toastInfo(this._t('sync_toast_peer_join').replace('{name}', displayName));
                     // Host: create SDP offer for the newly online Peer.
                     if (this.isHost && msg.device_id) {
                         console.log('[SYNC] Host detected peer online via presence: ' + msg.device_id);
@@ -4053,6 +4941,7 @@ var VX_SYNC = VX_SYNC || {
                     }
                 } else {
                     this.addActivity('peer_leave', displayName + ' 已离开');
+                    this.toastInfo(this._t('sync_toast_peer_leave').replace('{name}', displayName));
                     // Host: close the per-peer connection for this Peer
                     if (this.isHost && msg.device_id) {
                         console.log('[SYNC] Host closing connection for offline peer: ' + msg.device_id);
@@ -4113,6 +5002,7 @@ var VX_SYNC = VX_SYNC || {
         this._syncInProgress = false;
         this._peerLastPaths = null;
         this._hostLastPaths = null;
+        this._hostPendingOps = null;
         this._transferStats = {
             filesUploaded: 0,
             filesDownloaded: 0,
@@ -4527,6 +5417,40 @@ var VX_SYNC = VX_SYNC || {
      * Handle incoming WSS messages (unified message dispatch).
      * All message types flow through this single handler.
      */
+
+    // 临时切换镜像到指定 session 执行 fn，完成后恢复。
+    // 用于 WSS 消息路由到非活跃 session 时（不触发 UI 渲染）。
+    _withSession(driveId, fn) {
+        var prev = this.activeSessionId;
+        if (prev !== driveId) {
+            // 静默切换镜像（不渲染 UI）
+            var session = this.sessions.get(driveId);
+            if (!session) return;
+            // 切换前持久化当前活跃 session 的镜像字段
+            if (prev) {
+                var prevSession = this.sessions.get(prev);
+                if (prevSession) this._persistMirrorToSession(prevSession);
+            }
+            this.activeSessionId = driveId;
+            this._loadSessionToMirror(session);
+        }
+        try {
+            fn.call(this);
+        } finally {
+            if (prev !== driveId && prev) {
+                // 恢复前持久化目标 session 的镜像字段（fn 可能修改了 this.xxx）
+                var targetSession = this.sessions.get(driveId);
+                if (targetSession) this._persistMirrorToSession(targetSession);
+                // 恢复之前的活跃 session 镜像（不渲染 UI）
+                var prevSession = this.sessions.get(prev);
+                if (prevSession) {
+                    this.activeSessionId = prev;
+                    this._loadSessionToMirror(prevSession);
+                }
+            }
+        }
+    },
+
     _handleWSSMessage(msg) {
         console.log('[SYNC] WSS message: type=' + msg.type + ' drive_id=' + (msg.drive_id || 'none'));
 
@@ -4542,7 +5466,10 @@ var VX_SYNC = VX_SYNC || {
                 break;
 
             case 'drive_deleted':
-                if (this.currentDrive && this.currentDrive.drive_id === msg.drive_id) {
+                if (this.sessions.has(msg.drive_id)) {
+                    // 销毁对应 session（使用 _withSession 让 leaveDrive 操作正确 session）
+                    this.leaveDrive(msg.drive_id);
+                } else if (this.currentDrive && this.currentDrive.drive_id === msg.drive_id) {
                     this._handleDriveDeleted(msg.drive_id);
                 } else {
                     console.log('[SYNC] Drive deleted remotely: ' + msg.drive_id);
@@ -4551,37 +5478,75 @@ var VX_SYNC = VX_SYNC || {
                 }
                 break;
 
+            case 'new_notification':
+                this.loadUnreadCount();
+                // A new notification may carry the approval/rejection outcome for
+                // one of our pending join requests — refresh the pending cards.
+                this.loadMyJoinRequests();
+                break;
+
+            // ========== Join request status update (real-time applicant feedback) ==========
+            case 'join_request_status':
+                this._handleJoinRequestStatus(msg);
+                break;
+
             // ========== Presence (peer online/offline) ==========
             case 'presence':
-                this._handlePresenceNotification(msg);
+                // 更新对应 session 的 peers（若存在）；同时更新 drives 列表
+                if (msg.drive_id && this.sessions.has(msg.drive_id)) {
+                    var self1 = this;
+                    this._withSession(msg.drive_id, function() {
+                        self1._handlePresenceNotification(msg);
+                    });
+                } else {
+                    this._handlePresenceNotification(msg);
+                }
                 break;
 
             // ========== Drive status update (host online/offline) ==========
             case 'drive_status_update':
                 this._handleDriveStatusUpdate(msg);
+                // 同步更新 session.hostOnline
+                var payload = msg.payload || msg;
+                var hostOnline = payload.host_online;
+                if (msg.drive_id && this.sessions.has(msg.drive_id)) {
+                    var session = this.sessions.get(msg.drive_id);
+                    session.hostOnline = !!hostOnline;
+                    if (this.activeSessionId === msg.drive_id) {
+                        this._hostOnline = !!hostOnline;
+                    }
+                }
                 break;
 
             // ========== Peer list ==========
             case 'peer_list':
-                this._handlePeerList(msg);
+                if (msg.drive_id && this.sessions.has(msg.drive_id)) {
+                    var self2 = this;
+                    this._withSession(msg.drive_id, function() {
+                        self2._handlePeerList(msg);
+                    });
+                } else {
+                    this._handlePeerList(msg);
+                }
                 break;
 
             // ========== Sync control messages (P2P relay) ==========
             case 'sync_control':
-                if (this.currentDrive && this.currentDrive.drive_id === msg.drive_id) {
-                    // Extract msg_type and payload from the message
-                    var payload = msg.payload;
-                    if (typeof payload === 'string') {
-                        try { payload = JSON.parse(payload); } catch(e) { return; }
-                    }
-                    // The msg_type is encoded in the payload's _msg_type field or top-level type
-                    var msgType = payload._msg_type || payload.msg_type || msg.type;
-                    var wsm = {
-                        msg_type: msgType,
-                        from_device: msg.from_device,
-                        payload: payload
-                    };
-                    this.handleP2PMessage(wsm);
+                if (msg.drive_id && this.sessions.has(msg.drive_id)) {
+                    var self3 = this;
+                    this._withSession(msg.drive_id, function() {
+                        var payload = msg.payload;
+                        if (typeof payload === 'string') {
+                            try { payload = JSON.parse(payload); } catch(e) { return; }
+                        }
+                        var msgType = payload._msg_type || payload.msg_type || msg.type;
+                        var wsm = {
+                            msg_type: msgType,
+                            from_device: msg.from_device,
+                            payload: payload
+                        };
+                        self3.handleP2PMessage(wsm);
+                    });
                 }
                 break;
 
@@ -4589,27 +5554,65 @@ var VX_SYNC = VX_SYNC || {
             case 'webrtc_offer':
             case 'webrtc_answer':
             case 'ice_candidate':
-                this.handleSignalingMessage(msg);
+                if (msg.drive_id && this.sessions.has(msg.drive_id)) {
+                    var self4 = this;
+                    this._withSession(msg.drive_id, function() {
+                        self4.handleSignalingMessage(msg);
+                    });
+                }
                 break;
 
             // ========== WebRTC renegotiation (Host-side) ==========
             case 'webrtc_renegotiate':
-                this._handleWebRTCRenegotiate(msg);
+                if (msg.drive_id && this.sessions.has(msg.drive_id)) {
+                    var self5 = this;
+                    this._withSession(msg.drive_id, function() {
+                        self5._handleWebRTCRenegotiate(msg);
+                    });
+                }
                 break;
 
             // ========== Response types (for request/response matching) ==========
+            case 'drive_enter_resp':
+                // Apply authoritative permission from server before resolving
+                // any pending wsRequest. drive_enter_resp.permission is the
+                // server's source of truth (catches mid-session revocation /
+                // expiration that drive_list doesn't reflect yet).
+                if (msg.payload && msg.payload.permission) {
+                    this._currentDrivePermission = msg.payload.permission;
+                    if (!this.isHost) {
+                        console.log('[SYNC] drive_enter_resp permission=' + msg.payload.permission);
+                    }
+                }
+                if (msg.request_id) {
+                    this.handleWsResponse(msg.request_id, msg.payload || msg.data || {});
+                }
+                break;
+
             case 'register_device_resp':
             case 'drive_list_resp':
             case 'drive_create_resp':
             case 'drive_join_resp':
             case 'drive_delete_resp':
-            case 'drive_enter_resp':
             case 'drive_leave_resp':
             case 'device_get_resp':
             case 'device_set_resp':
             case 'sync_control_ack':
             case 'offline_poll_resp':
             case 'heartbeat_ack':
+            case 'invite_code_create_resp':
+            case 'invite_code_list_resp':
+            case 'invite_code_revoke_resp':
+            case 'join_request_apply_resp':
+            case 'join_request_list_resp':
+            case 'my_join_requests_resp':
+            case 'join_request_approve_resp':
+            case 'join_request_reject_resp':
+            case 'join_request_revoke_resp':
+            case 'notification_list_resp':
+            case 'notification_mark_read_resp':
+            case 'notification_mark_all_read_resp':
+            case 'unread_count_resp':
             case 'error':
                 if (msg.request_id) {
                     this.handleWsResponse(msg.request_id, msg.payload || msg.data || {});
@@ -4809,100 +5812,184 @@ var VX_SYNC = VX_SYNC || {
         }
     },
 
-    _cleanupConnection() {
-        console.log('[SYNC] Cleaning up drive connection: reconnectTimer=' + !!this._reconnectTimer + ' RTCPC=' + !!this.rtcPeerConnection + ' peerCons=' + Object.keys(this._peerConnections || {}).length + ' peerDeviceIds=' + Object.keys(this._peerDeviceIds || {}).length);
-        this.stopPeriodicSync();
-        this._stopHeartbeat();
-        this._clearJoinRetry();
-        if (this._reconnectTimer) {
-            clearTimeout(this._reconnectTimer);
-            this._reconnectTimer = null;
+    // 清理指定 session 的连接与定时器（不影响其它 session）。
+    // 若 session 是当前活跃 session，同步清理 this.xxx 镜像字段。
+    _cleanupSessionConnection(session) {
+        if (!session) return;
+        // 若清理的是 active session，先持久化镜像字段，确保 session.xxx 持有最新的 timers/RTC 引用
+        if (this.activeSessionId === session.drive_id) {
+            this._persistMirrorToSession(session);
         }
-        if (this._iceTimeout) {
-            clearTimeout(this._iceTimeout);
-            this._iceTimeout = null;
-        }
-        if (this._connectTimeout) {
-            clearTimeout(this._connectTimeout);
-            this._connectTimeout = null;
-        }
-        this._reconnectAttempt = 0;
-        this._offerInProgress = false;
-        if (this._offerTimeout) { clearTimeout(this._offerTimeout); this._offerTimeout = null; }
-        // Clear buffered signaling messages — they belong to the old connection
-        this._pendingSignaling = null;
-        // Reset connection state machine to initial disconnected state
-        this._connState = 'disconnected';
-        this._stopP2PProbing();
-        this._connectionMode = 'wss_relay';
+        console.log('[SYNC] Cleaning up session ' + session.drive_id + ': reconnectTimer=' + !!session.reconnectTimer + ' RTCPC=' + !!session.rtcPeerConnection + ' peerCons=' + Object.keys(session.peerConnections || {}).length);
 
-        // Send drive_leave to unregister from drive state on server.
-        // The global signalingWS stays open — it's per-user, not per-drive.
-        if (this.currentDrive && this.signalingWS && this.signalingWS.readyState === WebSocket.OPEN) {
-            this.wsRequest('drive_leave', {
-                drive_id: this.currentDrive.drive_id
-            }, true);
+        // 停止同步、心跳、FS 观察
+        this._stopSessionSync(session);
+
+        // 清理定时器
+        if (session.reconnectTimer) { clearTimeout(session.reconnectTimer); session.reconnectTimer = null; }
+        if (session.iceTimeout) { clearTimeout(session.iceTimeout); session.iceTimeout = null; }
+        if (session.connectTimeout) { clearTimeout(session.connectTimeout); session.connectTimeout = null; }
+        if (session.offerTimeout) { clearTimeout(session.offerTimeout); session.offerTimeout = null; }
+        session.reconnectAttempt = 0;
+        session.offerInProgress = false;
+        session.pendingSignaling = null;
+        session.connState = 'disconnected';
+        session.connectionMode = 'wss_relay';
+
+        // drive_leave（WSS 是 per-user 共享，不为单个 session 关闭）
+        if (this.signalingWS && this.signalingWS.readyState === WebSocket.OPEN) {
+            this.wsRequest('drive_leave', { drive_id: session.drive_id }, true);
         }
 
-        // Close WebRTC PeerConnection and DataChannels (per-drive)
-        if (this.rtcPeerConnection) {
-            try { this.rtcPeerConnection.close(); } catch (e) {}
-            this.rtcPeerConnection = null;
+        // 关闭 RTC
+        if (session.rtcPeerConnection) {
+            try { session.rtcPeerConnection.close(); } catch (e) {}
+            session.rtcPeerConnection = null;
         }
-        // Close all per-peer connections (Host side)
-        var self = this;
-        Object.keys(this._peerConnections).forEach(function(pid) {
-            var conn = self._peerConnections[pid];
-            try { conn.pc.close(); } catch (e) {}
+        Object.keys(session.peerConnections).forEach(function(pid) {
+            var conn = session.peerConnections[pid];
+            try { if (conn.pc) conn.pc.close(); } catch (e) {}
             if (conn.dc) { try { conn.dc.close(); } catch (e) {} }
         });
-        this._peerConnections = {};
-        this.dataChannel = null;
-        this.acceptDC = null;
-        this._peerDeviceIds = {};
-        this._eligiblePeers = [];
-        this._hostConnectionMode = 'unknown';
-        this._pendingDownloads = null;
-        if (this._pendingDownloadTimeout) {
-            clearTimeout(this._pendingDownloadTimeout);
-            this._pendingDownloadTimeout = null;
+        session.peerConnections = {};
+        session.dataChannel = null;
+        session.acceptDC = null;
+        session.peerDeviceIds = {};
+        session.pendingDownloads = null;
+        if (session.pendingDownloadTimeout) {
+            clearTimeout(session.pendingDownloadTimeout);
+            session.pendingDownloadTimeout = null;
+        }
+
+        // 若清理的是 active session，同步镜像字段并调用依赖 this.xxx 的辅助方法
+        if (this.activeSessionId === session.drive_id) {
+            // 这些方法操作 this.xxx 镜像字段，仅对 active session 有效
+            try { this._stopHeartbeat(); } catch (e) {}
+            try { this._clearJoinRetry(); } catch (e) {}
+            try { this._stopP2PProbing(); } catch (e) {}
+
+            this.rtcPeerConnection = null;
+            this._peerConnections = {};
+            this._peerDeviceIds = {};
+            this.dataChannel = null;
+            this.acceptDC = null;
+            this._pendingDownloads = null;
+            this._connState = 'disconnected';
+            this._reconnectTimer = null;
+            this._iceTimeout = null;
+            this._connectTimeout = null;
+            this._offerInProgress = false;
+            this._offerTimeout = null;
+            this._pendingSignaling = null;
+            this._connectionMode = 'wss_relay';
+            this._syncTimer = null;
+            this._immediateSyncTimer = null;
+            this._fsObserver = null;
+            this._eligiblePeers = [];
+            this._hostConnectionMode = 'unknown';
+            if (this._pendingDownloadTimeout) {
+                clearTimeout(this._pendingDownloadTimeout);
+                this._pendingDownloadTimeout = null;
+            }
         }
     },
 
-    leaveDrive() {
-        this.trackUI('sync_leave_drive');
-        console.log('[SYNC] Leaving drive: ' + (this.currentDrive ? this.currentDrive.drive_id : 'none'));
-        // Persist sync state so next session resumes correctly
-        this._saveSyncState();
-        this._cleanupConnection();
+    // 停止指定 session 的同步与 FS 观察
+    _stopSessionSync(session) {
+        if (!session) return;
+        if (session.syncTimer) { clearTimeout(session.syncTimer); session.syncTimer = null; }
+        if (session.immediateSyncTimer) { clearTimeout(session.immediateSyncTimer); session.immediateSyncTimer = null; }
+        if (session.fsObserver) {
+            try { session.fsObserver.disconnect(); } catch (e) {}
+            session.fsObserver = null;
+        }
+        // 若是 active session，也清理 this.xxx 镜像
+        if (this.activeSessionId === session.drive_id) {
+            try { this.stopPeriodicSync(); } catch (e) {}
+        }
+    },
 
-        if (this.currentDrive && this.currentDrive.drive_id) {
-            this._removeStoredFolderHandle(this.currentDrive.drive_id);
+    _cleanupConnection() {
+        // 兼容包装：清理当前活跃 session
+        this._cleanupSessionConnection(this._getActiveSession());
+    },
+
+    leaveDrive(driveId) {
+        driveId = driveId || (this.currentDrive ? this.currentDrive.drive_id : null);
+        if (!driveId) {
+            console.warn('[SYNC] leaveDrive: no drive to leave');
+            return;
+        }
+        this.trackUI('sync_leave_drive');
+        console.log('[SYNC] Leaving drive: ' + driveId);
+
+        var session = this.sessions.get(driveId);
+        var wasActive = (this.activeSessionId === driveId);
+
+        // 切换镜像到该 session 以保存状态（_saveSyncState 操作 this.xxx 镜像）
+        if (session && !wasActive) {
+            this.switchSession(driveId);
         }
 
-        this.currentDrive = null;
-        this.isHost = false;
-        this._hostOnline = true;
-        this.fileCache.clear();
-        this._localFiles = [];
-        this._fileStatus.clear();
-        this._fileProgress.clear();
-        this._currentTransferSha1 = null;
-        this._downloads.clear();
-        this.peers = [];
-        this._boundFolder = null;
-        this._connectionMode = 'wss_relay';
-        this._transferStats = {
-            filesUploaded: 0,
-            filesDownloaded: 0,
-            bytesUploaded: 0,
-            bytesDownloaded: 0
-        };
+        // Persist sync state so next session resumes correctly
+        if (session) {
+            this._saveSyncState();
+            this._cleanupSessionConnection(session);
+        }
 
-        this._hideMobileTopbar();
-        document.getElementById('sync-drive-list').style.display = '';
-        document.getElementById('sync-drive-detail').style.display = 'none';
-        document.getElementById('sync-drive-lobby').style.display = 'none';
+        if (driveId) {
+            this._removeStoredFolderHandle(driveId);
+        }
+
+        // 释放文件夹锁文件（异步，不阻塞）
+        if (session) {
+            var self = this;
+            this._releaseFolderLock(session).then(function() {});
+        }
+        this._bcast('drive_unlocked', { drive_id: driveId });
+
+        // 从 sessions Map 移除
+        this.sessions.delete(driveId);
+
+        // 切换到下一个 session 或返回列表
+        if (wasActive || this.activeSessionId === driveId) {
+            this.activeSessionId = null;
+            if (this.sessions.size > 0) {
+                this.switchSession(this.sessions.keys().next().value);
+            } else {
+                // 清空镜像字段
+                this.currentDrive = null;
+                this.isHost = false;
+                this._hostOnline = true;
+                this.fileCache.clear();
+                this._localFiles = [];
+                this._fileStatus.clear();
+                this._fileProgress.clear();
+                this._currentTransferSha1 = null;
+                this._downloads.clear();
+                this.peers = [];
+                this._boundFolder = null;
+                this._connectionMode = 'wss_relay';
+                this._transferStats = {
+                    filesUploaded: 0,
+                    filesDownloaded: 0,
+                    bytesUploaded: 0,
+                    bytesDownloaded: 0
+                };
+
+                this._hideMobileTopbar();
+                this._renderSessionSwitcher();
+                var list = document.getElementById('sync-drive-list');
+                var detail = document.getElementById('sync-drive-detail');
+                var lobby = document.getElementById('sync-drive-lobby');
+                if (list) list.style.display = '';
+                if (detail) detail.style.display = 'none';
+                if (lobby) lobby.style.display = 'none';
+            }
+        } else {
+            // 非活跃 session 被销毁，仅刷新切换器
+            this._renderSessionSwitcher();
+        }
     },
 
     // ========== Delete / Leave Drive ==========
@@ -4999,6 +6086,10 @@ var VX_SYNC = VX_SYNC || {
 
     uploadFiles() {
         if (!this._isHostAlive()) return;
+        if (!this._currentUserHasWritePermission()) {
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         this.trackUI('sync_upload_files');
         const input = document.getElementById('sync-file-input');
         if (input) input.click();
@@ -5006,6 +6097,10 @@ var VX_SYNC = VX_SYNC || {
     
     handleFileSelect(event) {
         if (!this._isHostAlive()) return;
+        if (!this._currentUserHasWritePermission()) {
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         this.trackUI('sync_file_select');
         const files = event.target.files;
         if (!files || files.length === 0) return;
@@ -5171,7 +6266,7 @@ var VX_SYNC = VX_SYNC || {
                 this._fileStatus.set(sha1, 'synced');
                 this._updateFileRow(sha1);
                 this._removeTransferActivity(sha1);
-                this.addActivity('upload', '发送中断: ' + (file.name || sha1));
+                this.addActivity('upload', '\u53d1\u9001\u4e2d\u65ad: ' + (file.name || sha1), { source: this._t('sync_this_device'), target: uploadTargetNode, mode: uploadMode });
                 return;
             }
 
@@ -5182,7 +6277,7 @@ var VX_SYNC = VX_SYNC || {
                 this._fileStatus.set(sha1, 'synced');
                 this._updateFileRow(sha1);
                 this._removeTransferActivity(sha1);
-                this.addActivity('upload', '发送中断: ' + (file.name || sha1));
+                this.addActivity('upload', '\u53d1\u9001\u4e2d\u65ad: ' + (file.name || sha1), { source: this._t('sync_this_device'), target: uploadTargetNode, mode: uploadMode });
                 return;
             }
 
@@ -5220,7 +6315,7 @@ var VX_SYNC = VX_SYNC || {
         this._fileStatus.set(sha1, 'synced');
         this._updateFileRow(sha1);
         this._removeTransferActivity(sha1);
-        this.addActivity('upload', '发送完成: ' + (file.name || sha1));
+        this.addActivity('upload', '\u53d1\u9001\u5b8c\u6210: ' + (file.name || sha1), { source: this._t('sync_this_device'), target: uploadTargetNode, mode: uploadMode });
     },
 
     resolveConflict(choice) {
@@ -5251,8 +6346,7 @@ var VX_SYNC = VX_SYNC || {
         // Also remove from local files list
         this._localFiles = (this._localFiles || []).filter(function(f) { return f.sha1 !== sha1; });
         this.renderFileList(Array.from(this.fileCache.values()));
-        var src = source ? ' (' + source + ')' : '';
-        this.addActivity('delete', fileName + src);
+        this.addActivity('delete', fileName, { source: source || this._t('sync_this_device'), target: this._t('sync_this_device') });
     },
     
     handleRemoteRename(sha1, newName, newSha1, source) {
@@ -5278,8 +6372,7 @@ var VX_SYNC = VX_SYNC || {
         };
         this.fileCache.set(newEntry.sha1, newEntry);
         this.renderFileList(Array.from(this.fileCache.values()));
-        var src = source ? ' (' + source + ')' : '';
-        this.addActivity('rename', oldName + ' \u2192 ' + newName + src);
+        this.addActivity('rename', oldName + ' \u2192 ' + newName, { source: source || this._t('sync_this_device'), target: this._t('sync_this_device') });
     },
 
     handleRemoteMove(sha1, newParentPath, newSha1, source) {
@@ -5304,8 +6397,7 @@ var VX_SYNC = VX_SYNC || {
         };
         this.fileCache.set(newEntry.sha1, newEntry);
         this.renderFileList(Array.from(this.fileCache.values()));
-        var src = source ? ' (' + source + ')' : '';
-        this.addActivity('move', entry.name + ' \u2192 ' + newParentPath + src);
+        this.addActivity('move', entry.name + ' \u2192 ' + newParentPath, { source: source || this._t('sync_this_device'), target: this._t('sync_this_device') });
     },
     
     async handleRemoteMkdir(data, source) {
@@ -5315,8 +6407,7 @@ var VX_SYNC = VX_SYNC || {
         if (this._boundFolder && this._boundFolder.handle) {
             await this._createLocalFolder(folderPath, data.name);
         }
-        var src = source ? ' (' + source + ')' : '';
-        this.addActivity('create_folder', data.name + src);
+        this.addActivity('create_folder', data.name, { source: source || this._t('sync_this_device'), target: this._t('sync_this_device') });
         // Only add to cache if the folder is in the current viewing path
         if (folderPath !== this.currentPath) {
             console.log('[SYNC] Remote mkdir skipped (different path): ' + folderPath + ' != ' + this.currentPath);
@@ -5338,6 +6429,10 @@ var VX_SYNC = VX_SYNC || {
     
     async deleteFile(sha1) {
         if (!this._isHostAlive()) return;
+        if (!this._currentUserHasWritePermission()) {
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         this.trackUI('sync_delete_file');
         var self = this;
         var file = this.fileCache.get(sha1);
@@ -5349,7 +6444,7 @@ var VX_SYNC = VX_SYNC || {
         this._updateFileRow(sha1);
 
         // handleRemoteDelete handles both local FS deletion and cache update
-        await this.handleRemoteDelete(sha1, '\u672c\u673a');
+        await this.handleRemoteDelete(sha1, this._t('sync_this_device'));
 
         // Broadcast to all peers
         await this.sendToAllPeers('file_op', {
@@ -5363,6 +6458,10 @@ var VX_SYNC = VX_SYNC || {
     
     async createFolder(name) {
         if (!this._isHostAlive()) return;
+        if (!this._currentUserHasWritePermission()) {
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         this.trackUI('sync_create_folder');
         var self = this;
         var parentPath = this.currentPath;
@@ -5391,6 +6490,10 @@ var VX_SYNC = VX_SYNC || {
     
     async renameFile(sha1, newName) {
         if (!this._isHostAlive()) return;
+        if (!this._currentUserHasWritePermission()) {
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         this.trackUI('sync_rename_file');
         var self = this;
         var file = this.fileCache.get(sha1);
@@ -5403,7 +6506,7 @@ var VX_SYNC = VX_SYNC || {
         var ok = await this._renameLocalFile(oldPath, newName);
         if (!ok) {
             console.warn('[SYNC] Local rename failed, aborting sync');
-            this.addActivity('rename', oldName + ' \u2192 ' + newName + ' (失败)');
+            this.addActivity('rename', oldName + ' \u2192 ' + newName + ' (\u5931\u8d25)', { source: this._t('sync_this_device'), target: this._t('sync_all_peers') });
             return;
         }
 
@@ -5429,13 +6532,24 @@ var VX_SYNC = VX_SYNC || {
             parent_path: file.parent_path || '/'
         });
 
-        this.addActivity('rename', oldName + ' \u2192 ' + newName + ' (\u672c\u673a)');
+        this.addActivity('rename', oldName + ' \u2192 ' + newName, { source: this._t('sync_this_device'), target: this._t('sync_all_peers') });
         this.renderFileList(Array.from(this.fileCache.values()));
+
+        // Track old path as pending rename — prevents race condition where Peer
+        // reports the old path before receiving the file_op rename command
+        if (!this._hostPendingOps) this._hostPendingOps = {};
+        var newPath = (file.parent_path === '/' ? '' : file.parent_path) + '/' + newName;
+        this._hostPendingOps[oldPath] = { op: 'rename', newPath: newPath, ts: Date.now() };
+
         this._triggerImmediateSync('rename');
     },
 
     async moveFile(sha1, newParentPath) {
         if (!this._isHostAlive()) return;
+        if (!this._currentUserHasWritePermission()) {
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         this.trackUI('sync_move_file');
         var self = this;
         var file = this.fileCache.get(sha1);
@@ -5447,7 +6561,7 @@ var VX_SYNC = VX_SYNC || {
         var ok = await this._moveLocalFile(oldPath, newParentPath);
         if (!ok) {
             console.warn('[SYNC] Local move failed, aborting sync');
-            this.addActivity('move', file.name + ' \u2192 ' + newParentPath + ' (失败)');
+            this.addActivity('move', file.name + ' \u2192 ' + newParentPath + ' (\u5931\u8d25)', { source: this._t('sync_this_device'), target: this._t('sync_all_peers') });
             return;
         }
 
@@ -5473,8 +6587,15 @@ var VX_SYNC = VX_SYNC || {
             name: file.name
         });
 
-        this.addActivity('move', file.name + ' \u2192 ' + newParentPath + ' (\u672c\u673a)');
+        this.addActivity('move', file.name + ' \u2192 ' + newParentPath, { source: this._t('sync_this_device'), target: this._t('sync_all_peers') });
         this.renderFileList(Array.from(this.fileCache.values()));
+
+        // Track old path as pending move — prevents race condition where Peer
+        // reports the old path before receiving the file_op move command
+        if (!this._hostPendingOps) this._hostPendingOps = {};
+        var movedNewPath = (newParentPath === '/' ? '' : newParentPath) + '/' + file.name;
+        this._hostPendingOps[oldPath] = { op: 'move', newPath: movedNewPath, ts: Date.now() };
+
         this._triggerImmediateSync('move');
     },
     
@@ -5791,8 +6912,23 @@ var VX_SYNC = VX_SYNC || {
     },
 
     // ========== Folder Binding ==========
+
+    // Peer 绑定/更换文件夹前提醒用户初始化规则（主机数据覆盖本地）
+    // 返回 true=确认继续，false=取消
+    _confirmPeerFolderBind() {
+        return confirm(this._t('sync_peer_bind_warning_body'));
+    },
+
     async selectFolder() {
         this.trackUI('sync_select_folder');
+
+        // Peer / 共享同步盘：绑定前提醒用户初始化规则（主机数据覆盖本地）
+        // _skipPeerBindConfirm 由 changeBoundFolder 设置，避免二次确认
+        if (!this.isHost && !this._skipPeerBindConfirm && !this._confirmPeerFolderBind()) {
+            console.log('[SYNC] Peer folder bind cancelled by user (warning dialog)');
+            return;
+        }
+
         console.log('[SYNC] Opening folder picker...');
         try {
             var dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
@@ -5800,6 +6936,27 @@ var VX_SYNC = VX_SYNC || {
                 name: dirHandle.name,
                 handle: dirHandle
             };
+
+            // 多 session：同步写入当前 session，并获取文件夹锁文件（物理排他）
+            var session = this._getActiveSession();
+            if (session) {
+                session.boundFolder = this._boundFolder;
+                var locked = await this._acquireFolderLock(session);
+                if (!locked) {
+                    VXUI.showMsg(this._t('sync_folder_locked_other_tab'), 'warning');
+                    this._boundFolder = null;
+                    session.boundFolder = null;
+                    this._updateFolderPathDisplay();
+                    this.showLobby();
+                    return;
+                }
+                this._bcast('drive_locked', {
+                    drive_id: session.drive_id,
+                    role: session.role,
+                    folder_name: session.boundFolder.name
+                });
+            }
+
             console.log('[SYNC] Folder bound: ' + dirHandle.name);
             this._updateFolderPathDisplay();
             this.addActivity('bind_folder', dirHandle.name);
@@ -5835,8 +6992,10 @@ var VX_SYNC = VX_SYNC || {
             if (!this.isHost) {
                 var dc = this.acceptDC;
                 if (dc && dc.readyState === 'open') {
-                    console.log('[SYNC] Peer folder bound after DC open, sending file report');
-                    this.sendPeerFileReport();
+                    console.log('[SYNC] Peer folder bound after DC open, sending file report (folder_changed=true)');
+                    // Pass folderChanged=true so Host does not mistake missing
+                    // files for deletions on this first report.
+                    this.sendPeerFileReport(true);
                 }
             } else {
                 // Host: re-list files and send to all connected Peers, then request fresh peer_file_report
@@ -5887,9 +7046,21 @@ var VX_SYNC = VX_SYNC || {
     async changeBoundFolder() {
         this.trackUI('sync_change_folder');
 
+        // Peer / 共享同步盘：更换文件夹前提醒用户初始化规则
+        if (!this.isHost && !this._confirmPeerFolderBind()) {
+            console.log('[SYNC] Peer folder change cancelled by user (warning dialog)');
+            return;
+        }
+
         // If no folder currently bound, just use selectFolder directly
+        // （已在上方确认过，跳过 selectFolder 内部的二次确认）
         if (!this._boundFolder || !this._boundFolder.handle) {
-            await this.selectFolder();
+            this._skipPeerBindConfirm = true;
+            try {
+                await this.selectFolder();
+            } finally {
+                this._skipPeerBindConfirm = false;
+            }
             return;
         }
 
@@ -5928,6 +7099,15 @@ var VX_SYNC = VX_SYNC || {
         this.addActivity('change_folder', dirHandle.name);
         this.toastSuccess(this._t('sync_folder_bound').replace('{name}', dirHandle.name));
 
+        // Reset Peer-side last-sync state before loading the new folder's
+        // state. The old _peerLastPaths belongs to the previous folder and
+        // must NOT leak into the new folder's sync — otherwise every file
+        // from the old folder would be reported as "deleted", and Host would
+        // propagate those phantom deletions to itself, wiping Host's files.
+        if (!this.isHost) {
+            this._peerLastPaths = null;
+        }
+
         // Load persisted sync state from .tmpsync/state.json in new folder
         await this._loadSyncState();
 
@@ -5938,8 +7118,8 @@ var VX_SYNC = VX_SYNC || {
         if (!this.isHost) {
             var dc = this.acceptDC;
             if (dc && dc.readyState === 'open') {
-                console.log('[SYNC] Peer folder changed after DC open, sending file report');
-                this.sendPeerFileReport();
+                console.log('[SYNC] Peer folder changed after DC open, sending file report (folder_changed=true)');
+                this.sendPeerFileReport(true);
             }
         } else {
             // Host: re-list files and send to all connected Peers, then request fresh peer_file_report
@@ -5993,6 +7173,7 @@ var VX_SYNC = VX_SYNC || {
         var items = [];
         for await (var [name, handle] of dirHandle.entries()) {
             if (name === '.tmpsync') continue;
+            if (this._isIgnoredEntry(name, handle.kind === 'directory')) continue;
             if (handle.kind === 'file') {
                 var file = await handle.getFile();
                 var sha1 = await this._fingerprintFile(name, path, file.size, new Date(file.lastModified).toISOString());
@@ -6210,6 +7391,157 @@ var VX_SYNC = VX_SYNC || {
         }
     },
 
+    // ========== Folder Lock File ==========
+    // .tmpsync/drive.lock 实现物理文件夹排他性。
+    // 同一磁盘文件夹无论被哪个浏览器、哪个 tab 绑定，都会读取到同一个锁文件。
+    // 心跳每 1s 更新一次，3s 未更新视为同步盘不处于运行状态，可被覆盖。
+    _LOCK_FILE_NAME: 'drive.lock',
+    _LOCK_HEARTBEAT_INTERVAL_MS: 1000,    // 心跳间隔 1s（运行状态指示）
+    _LOCK_EXPIRE_MS: 3000,                // 锁过期阈值 3s
+
+    // 生成随机 nonce（用于写入后读回校验，防并发覆盖）
+    _generateLockNonce() {
+        return Math.random().toString(36).substring(2, 12) + Date.now().toString(36);
+    },
+
+    // 读取锁文件内容。返回 null 表示不存在或读取失败。
+    async _readDriveLockFile(folderHandle) {
+        if (!folderHandle) return null;
+        try {
+            var tmpDir = await folderHandle.getDirectoryHandle('.tmpsync', { create: false });
+            var fileHandle;
+            try {
+                fileHandle = await tmpDir.getFileHandle(this._LOCK_FILE_NAME, { create: false });
+            } catch (e) {
+                return null; // 锁文件不存在
+            }
+            var file = await fileHandle.getFile();
+            var text = await file.text();
+            return JSON.parse(text);
+        } catch (e) {
+            return null;
+        }
+    },
+
+    // 写入锁文件（覆盖式）。
+    async _writeDriveLockFile(folderHandle, lockData) {
+        if (!folderHandle) return false;
+        try {
+            var tmpDir = await folderHandle.getDirectoryHandle('.tmpsync', { create: true });
+            var fileHandle = await tmpDir.getFileHandle(this._LOCK_FILE_NAME, { create: true });
+            var writable = await fileHandle.createWritable();
+            await writable.write(JSON.stringify(lockData, null, 2));
+            await writable.close();
+            return true;
+        } catch (e) {
+            console.warn('[SYNC] Failed to write drive.lock:', e);
+            return false;
+        }
+    },
+
+    // 删除锁文件。
+    async _deleteDriveLockFile(folderHandle) {
+        if (!folderHandle) return;
+        try {
+            var tmpDir = await folderHandle.getDirectoryHandle('.tmpsync', { create: false });
+            await tmpDir.removeEntry(this._LOCK_FILE_NAME);
+        } catch (e) {
+            // 文件不存在或删除失败，忽略
+        }
+    },
+
+    // 校验锁文件是否过期
+    _isLockExpired(lockData) {
+        if (!lockData || !lockData.last_heartbeat) return true;
+        var lastHB = new Date(lockData.last_heartbeat).getTime();
+        if (isNaN(lastHB)) return true;
+        return (Date.now() - lastHB) > this._LOCK_EXPIRE_MS;
+    },
+
+    // 尝试占用文件夹锁。返回 true 表示成功，false 表示冲突。
+    async _acquireFolderLock(session) {
+        if (!session || !session.boundFolder || !session.boundFolder.handle) return true;
+        var folderHandle = session.boundFolder.handle;
+        var nonce = this._generateLockNonce();
+
+        // 1. 读取现有锁文件
+        var existing = await this._readDriveLockFile(folderHandle);
+        if (existing) {
+            var isOwn = (existing.tab_id === this._tabID &&
+                         existing.device_id === this.getDeviceId() &&
+                         existing.uid === TL.uid);
+            var isExpired = this._isLockExpired(existing);
+
+            if (!isOwn && !isExpired) {
+                // 锁属于其它 tab/device 且未过期 → 冲突
+                console.warn('[SYNC] Folder locked by another session:', existing);
+                return false;
+            }
+            // isOwn 或 isExpired → 可以覆盖
+        }
+
+        // 2. 写入新锁文件
+        var now = new Date().toISOString();
+        var lockData = {
+            drive_id: session.drive_id,
+            uid: TL.uid,
+            device_id: this.getDeviceId(),
+            tab_id: this._tabID,
+            role: session.role,
+            nonce: nonce,
+            locked_at: existing ? existing.locked_at : now,
+            last_heartbeat: now
+        };
+        var written = await this._writeDriveLockFile(folderHandle, lockData);
+        if (!written) return false;
+
+        // 3. 立即读回，校验 nonce（防并发覆盖）
+        var readback = await this._readDriveLockFile(folderHandle);
+        if (!readback || readback.nonce !== nonce) {
+            console.warn('[SYNC] Folder lock nonce mismatch, concurrent acquisition detected');
+            return false;
+        }
+
+        session.lockNonce = nonce;
+        console.log('[SYNC] Folder lock acquired for drive ' + session.drive_id + ' nonce=' + nonce);
+        return true;
+    },
+
+    // 更新锁文件 heartbeat（每 1s 定时调用，作为同步盘运行状态指示）。
+    async _touchDriveLockFile(session) {
+        if (!session || !session.boundFolder || !session.boundFolder.handle) return;
+        if (!session.lockNonce) return; // 未持有锁
+        var folderHandle = session.boundFolder.handle;
+
+        // 读取当前锁，确认仍属于本 session
+        var current = await this._readDriveLockFile(folderHandle);
+        if (!current || current.nonce !== session.lockNonce) {
+            // 锁已被其它 session 覆盖，清除本地 nonce
+            console.warn('[SYNC] Folder lock lost (nonce mismatch) for drive ' + session.drive_id);
+            session.lockNonce = null;
+            return;
+        }
+
+        // 更新 heartbeat
+        current.last_heartbeat = new Date().toISOString();
+        await this._writeDriveLockFile(folderHandle, current);
+    },
+
+    // 释放文件夹锁（leaveDrive / 页面卸载时调用）。
+    async _releaseFolderLock(session) {
+        if (!session || !session.boundFolder || !session.boundFolder.handle) return;
+        if (!session.lockNonce) return;
+        var folderHandle = session.boundFolder.handle;
+
+        // 确认锁仍属于本 session 再删除
+        var current = await this._readDriveLockFile(folderHandle);
+        if (current && current.nonce === session.lockNonce) {
+            await this._deleteDriveLockFile(folderHandle);
+            console.log('[SYNC] Folder lock released for drive ' + session.drive_id);
+        }
+        session.lockNonce = null;
+    },
+
     // ========== .tmpsync State Persistence ==========
     // The .tmpsync directory stores sync state (file path tracking, etc.)
     // It is excluded from sync scanning and never transferred between nodes.
@@ -6233,7 +7565,7 @@ var VX_SYNC = VX_SYNC || {
             if (!tmpDir) return;
 
             var state = {
-                version: 1,
+                version: 2,
                 device_id: this.deviceId || '',
                 is_host: this.isHost,
                 drive_id: this.currentDrive ? this.currentDrive.drive_id : null,
@@ -6241,7 +7573,8 @@ var VX_SYNC = VX_SYNC || {
                 last_sync_paths: {
                     local: this.isHost ? this._hostLastPaths : this._peerLastPaths,
                     remote: this.isHost ? this._peerLastPaths : null
-                }
+                },
+                host_pending_ops: this.isHost ? (this._hostPendingOps || null) : null
             };
 
             var fileHandle = await tmpDir.getFileHandle('state.json', { create: true });
@@ -6273,8 +7606,8 @@ var VX_SYNC = VX_SYNC || {
             var text = await file.text();
             var state = JSON.parse(text);
 
-            if (state.version !== 1) {
-                console.log('[SYNC] State version mismatch, ignoring stored state');
+            if (state.version !== 1 && state.version !== 2) {
+                console.log('[SYNC] State version mismatch (v' + state.version + '), ignoring stored state');
                 return;
             }
 
@@ -6282,6 +7615,8 @@ var VX_SYNC = VX_SYNC || {
             if (this.isHost) {
                 this._hostLastPaths = state.last_sync_paths.local || null;
                 this._peerLastPaths = state.last_sync_paths.remote || null;
+                // Restore pending Host operations (v2+)
+                this._hostPendingOps = state.host_pending_ops || null;
             } else {
                 this._peerLastPaths = state.last_sync_paths.local || null;
             }
@@ -6312,6 +7647,7 @@ var VX_SYNC = VX_SYNC || {
         var files = [];
         for await (var [name, handle] of dirHandle.entries()) {
             if (name === '.tmpsync') continue;
+            if (this._isIgnoredEntry(name, handle.kind === 'directory')) continue;
             if (handle.kind === 'file') {
                 var file = await handle.getFile();
                 files.push({
@@ -6342,6 +7678,25 @@ var VX_SYNC = VX_SYNC || {
     },
 
     // ========== Folder Scanning & Indexing ==========
+
+    // Check if a file or directory should be excluded from sync.
+    // Files: .DS_Store (macOS Finder metadata), ._* (AppleDouble resource fork),
+    //   .crswap / .crdownload (Chrome temp downloads), .tmp (generic temp files),
+    //   Thumbs.db (Windows thumbnail cache), .localized (macOS folder localization)
+    // Directories: .Spotlight-V100, .Trashes, .fseventsd, .TemporaryItems
+    _isIgnoredEntry(name, isDir) {
+        if (!name) return false;
+        if (isDir) {
+            return name === '.Spotlight-V100' || name === '.Trashes' ||
+                   name === '.fseventsd' || name === '.TemporaryItems';
+        }
+        // Files: system metadata + temp files
+        if (name === '.DS_Store' || name === '.localized' || name === 'Thumbs.db') return true;
+        if (name.startsWith('._')) return true;
+        var lower = name.toLowerCase();
+        return lower.endsWith('.crswap') || lower.endsWith('.crdownload') || lower.endsWith('.tmp');
+    },
+
     async _fingerprintFile(name, parentPath, size, mtime) {
         // Use path+name+size as fingerprint (NOT mtime).
         // mtime differs between Host and Peer after sync (write time != original time),
@@ -6352,6 +7707,20 @@ var VX_SYNC = VX_SYNC || {
         var hashBuffer = await crypto.subtle.digest('SHA-1', data);
         var hashArray = Array.from(new Uint8Array(hashBuffer));
         return hashArray.map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+    },
+
+    // ========== Permission Helpers ==========
+
+    // Check if the current user is the owner of the given drive (or currentDrive).
+    _isDriveOwner(drive) {
+        drive = drive || this.currentDrive;
+        if (!drive) return false;
+        return String(drive.host_uid) === String(TL.uid);
+    },
+
+    // Host or drive owner can manage permissions (invite codes, join requests).
+    _canManagePermissions() {
+        return this.isHost || this._isDriveOwner();
     },
 
     // ========== Activity Tracking ==========
@@ -6378,12 +7747,31 @@ var VX_SYNC = VX_SYNC || {
             time: new Date().toISOString(),
             details: details || null
         };
-        console.log('[SYNC] Activity: [' + type + '] ' + desc);
+        console.log('[SYNC] Activity: [' + type + '] ' + desc + (details ? ' ' + JSON.stringify(details) : ''));
         this._activities.unshift(activity);
         if (this._activities.length > 300) {
             this._activities = this._activities.slice(0, 300);
         }
         this.renderActivityList();
+    },
+
+    // Build HTML for activity metadata line (source → target + mode badge).
+    // details: { source, target, mode } — any field may be omitted.
+    _renderActivityMeta(details) {
+        if (!details) return '';
+        var parts = [];
+        if (details.source || details.target) {
+            var src = details.source || '—';
+            var tgt = details.target || '—';
+            parts.push('<span>' + this.escapeHtml(src) + ' \u2192 ' + this.escapeHtml(tgt) + '</span>');
+        }
+        if (details.mode === 'p2p') {
+            parts.push('<span class="vx-sync-conn-badge mode-p2p">' + this._t('sync_mode_p2p') + '</span>');
+        } else if (details.mode === 'relay') {
+            parts.push('<span class="vx-sync-conn-badge mode-relay">' + this._t('sync_mode_relay') + '</span>');
+        }
+        if (parts.length === 0) return '';
+        return '<div class="vx-sync-activity-meta">' + parts.join('') + '</div>';
     },
 
     // Update (or create) a transfer activity with progress, speed, mode, source.
@@ -6433,11 +7821,20 @@ var VX_SYNC = VX_SYNC || {
         var speedText = speed || '';
         var modeBadge = '';
         if (mode === 'p2p') {
-            modeBadge = '<span class="vx-sync-conn-badge mode-p2p">直连</span>';
+            modeBadge = '<span class="vx-sync-conn-badge mode-p2p">' + VX_SYNC._t('sync_mode_p2p') + '</span>';
         } else if (mode === 'relay') {
-            modeBadge = '<span class="vx-sync-conn-badge mode-relay">中转</span>';
+            modeBadge = '<span class="vx-sync-conn-badge mode-relay">' + VX_SYNC._t('sync_mode_relay') + '</span>';
         }
-        var sourceText = sourceNode ? (' | ' + sourceNode) : '';
+        // Build source → target text: download = sourceNode → 本机, upload = 本机 → sourceNode
+        var thisDevice = VX_SYNC._t('sync_this_device');
+        var routeText = '';
+        if (sourceNode) {
+            if (type === 'download') {
+                routeText = '<span class="vx-text-muted">' + VX_SYNC.escapeHtml(sourceNode) + ' \u2192 ' + VX_SYNC.escapeHtml(thisDevice) + '</span>';
+            } else {
+                routeText = '<span class="vx-text-muted">' + VX_SYNC.escapeHtml(thisDevice) + ' \u2192 ' + VX_SYNC.escapeHtml(sourceNode) + '</span>';
+            }
+        }
 
         var html = '<div class="vx-list-row vx-sync-transfer-row" data-transfer-id="' + id + '" data-transfer-type="' + type + '">' +
             '<div class="vx-list-name">' +
@@ -6449,7 +7846,7 @@ var VX_SYNC = VX_SYNC || {
                         '<span class="vx-text-muted">' + pctText + '</span>' +
                         (speedText ? ' &middot; <span class="vx-text-muted">' + speedText + '</span>' : '') +
                         modeBadge +
-                        sourceText +
+                        (routeText ? ' | ' + routeText : '') +
                     '</div>' +
                 '</div>' +
             '</div>' +
@@ -6500,10 +7897,14 @@ var VX_SYNC = VX_SYNC || {
         var html = nonTransfer.map(function(a) {
             var timeStr = VX_SYNC.formatDateTime(a.time);
             var icon = VX_SYNC._getActivityIcon(a.type);
+            var metaHtml = VX_SYNC._renderActivityMeta(a.details);
             return '<div class="vx-list-row">' +
                 '<div class="vx-list-name">' +
                     '<div class="vx-list-icon"><span class="vx-sync-activity-icon">' + icon + '</span></div>' +
-                    '<div class="vx-list-filename"><span>' + VX_SYNC.escapeHtml(a.desc) + '</span></div>' +
+                    '<div class="vx-list-filename">' +
+                        '<span>' + VX_SYNC.escapeHtml(a.desc) + '</span>' +
+                        metaHtml +
+                    '</div>' +
                 '</div>' +
                 '<div class="vx-list-date"><span class="vx-text-muted">' + timeStr + '</span></div>' +
             '</div>';
@@ -6514,13 +7915,28 @@ var VX_SYNC = VX_SYNC || {
         for (var i = 0; i < transferItems.length; i++) {
             var t = transferItems[i];
             if (!detailContainer.querySelector('[data-transfer-id="' + t.id + '"]')) {
+                var tModeBadge = '';
+                if (t.mode === 'p2p') {
+                    tModeBadge = '<span class="vx-sync-conn-badge mode-p2p">' + VX_SYNC._t('sync_mode_p2p') + '</span>';
+                } else if (t.mode === 'relay') {
+                    tModeBadge = '<span class="vx-sync-conn-badge mode-relay">' + VX_SYNC._t('sync_mode_relay') + '</span>';
+                }
+                var tRoute = '';
+                if (t.source) {
+                    var tDev = VX_SYNC._t('sync_this_device');
+                    if (t.type === 'download') {
+                        tRoute = '<span class="vx-text-muted">' + VX_SYNC.escapeHtml(t.source) + ' \u2192 ' + VX_SYNC.escapeHtml(tDev) + '</span>';
+                    } else {
+                        tRoute = '<span class="vx-text-muted">' + VX_SYNC.escapeHtml(tDev) + ' \u2192 ' + VX_SYNC.escapeHtml(t.source) + '</span>';
+                    }
+                }
                 html = '<div class="vx-list-row vx-sync-transfer-row" data-transfer-id="' + t.id + '" data-transfer-type="' + t.type + '">' +
                     '<div class="vx-list-name">' +
                         '<div class="vx-list-icon"><span class="vx-sync-activity-icon">' + (t.type === 'download' ? '\u2b07\ufe0f' : '\u2b06\ufe0f') + '</span></div>' +
                         '<div class="vx-list-filename">' +
                             '<span>' + VX_SYNC.escapeHtml(t.desc) + '</span>' +
                             '<div class="vx-sync-transfer-bar"><div class="vx-sync-transfer-fill" style="width:' + (t.progress || 0) + '%"></div></div>' +
-                            '<div class="vx-sync-transfer-info"><span class="vx-text-muted">' + (t.progress || 0) + '%</span></div>' +
+                            '<div class="vx-sync-transfer-info"><span class="vx-text-muted">' + (t.progress || 0) + '%</span>' + tModeBadge + (tRoute ? ' | ' + tRoute : '') + '</div>' +
                         '</div>' +
                     '</div>' +
                 '</div>' + html;
@@ -7099,5 +8515,370 @@ var VX_SYNC = VX_SYNC || {
         if (typeof VXUI !== 'undefined' && VXUI && typeof VXUI.toastWarning === 'function') {
             VXUI.toastWarning(msg);
         }
-    }
+    },
+
+    toastInfo(msg) {
+        if (typeof VXUI !== 'undefined' && VXUI && typeof VXUI.toastInfo === 'function') {
+            VXUI.toastInfo(msg);
+        }
+    },
+
+    // ========== Invite Code Operations ==========
+
+    showGenerateInviteCode() {
+        this.trackUI('sync_show_generate_invite');
+        document.getElementById('sync-generate-invite-modal').style.display = 'flex';
+        // Bind custom input visibility
+        var self = this;
+        ['invite_expires', 'max_uses', 'perm_expires'].forEach(function(name) {
+            document.querySelectorAll('input[name="' + name + '"]').forEach(function(radio) {
+                radio.onchange = function() {
+                    var customId = '';
+                    if (name === 'invite_expires') customId = 'invite-expires-custom';
+                    else if (name === 'max_uses') customId = 'max-uses-custom';
+                    else customId = 'perm-expires-custom';
+                    var customInput = document.getElementById(customId);
+                    if (customInput) {
+                        customInput.style.display = this.value === 'custom' ? 'block' : 'none';
+                    }
+                };
+            });
+        });
+    },
+
+    hideGenerateInviteCode() {
+        document.getElementById('sync-generate-invite-modal').style.display = 'none';
+    },
+
+    async doGenerateInviteCode() {
+        var getSelectedValue = function(name) {
+            var checked = document.querySelector('input[name="' + name + '"]:checked');
+            if (!checked) return 0;
+            return parseInt(checked.value) || 0;
+        };
+
+        // Handle custom values
+        var expiresDays = getSelectedValue('invite_expires');
+        if (document.querySelector('input[name="invite_expires"]:checked') &&
+            document.querySelector('input[name="invite_expires"]:checked').value === 'custom') {
+            var custom = parseInt(document.getElementById('invite-expires-custom').value);
+            expiresDays = isNaN(custom) ? 0 : custom;
+        }
+
+        var maxUses = getSelectedValue('max_uses');
+        if (document.querySelector('input[name="max_uses"]:checked') &&
+            document.querySelector('input[name="max_uses"]:checked').value === 'custom') {
+            var custom = parseInt(document.getElementById('max-uses-custom').value);
+            maxUses = isNaN(custom) ? 0 : custom;
+        }
+
+        var permExpiresDays = getSelectedValue('perm_expires');
+        if (document.querySelector('input[name="perm_expires"]:checked') &&
+            document.querySelector('input[name="perm_expires"]:checked').value === 'custom') {
+            var custom = parseInt(document.getElementById('perm-expires-custom').value);
+            permExpiresDays = isNaN(custom) ? 0 : custom;
+        }
+
+        var permissionEl = document.querySelector('input[name="permission"]:checked');
+        var permission = permissionEl ? permissionEl.value : 'read';
+
+        try {
+            var resp = await this.wsRequest('invite_code_create_req', {
+                drive_id: this.currentDrive.drive_id,
+                permission: permission,
+                expires_days: expiresDays,
+                max_uses: maxUses,
+                permission_expires_days: permExpiresDays,
+            });
+            if (resp.status !== 1) return;
+            VXUI.showMsg(this._t('sync_invite_created'), 'success');
+            this.hideGenerateInviteCode();
+            this.loadInviteCodes();
+        } catch (e) {
+            console.error('generate invite code failed', e);
+            VXUI.showMsg('生成失败，请重试', 'error');
+        }
+    },
+
+    async loadInviteCodes() {
+        if (!this.currentDrive || !this._canManagePermissions()) return;
+
+        try {
+            var resp = await this.wsRequest('invite_code_list_req', {
+                drive_id: this.currentDrive.drive_id,
+            });
+            if (resp.status !== 1) return;
+            this._inviteCodes = (resp.data && resp.data.codes) || [];
+            this.renderInviteCodeList();
+        } catch (e) {
+            console.error('loadInviteCodes error', e);
+        }
+    },
+
+    renderInviteCodeList() {
+        var container = document.getElementById('sync-invite-code-list');
+        if (!this._inviteCodes || this._inviteCodes.length === 0) {
+            container.innerHTML = '<tr class="vx-sync-empty-row"><td colspan="6" data-tpl="sync_no_invite_codes">暂无邀请码</td></tr>';
+            if (typeof VXUI !== 'undefined' && VXUI.translateContainer) VXUI.translateContainer(container);
+            return;
+        }
+
+        var html = '';
+        var self = this;
+        this._inviteCodes.forEach(function(code) {
+            var isExpired = code.expires_at && new Date(code.expires_at) < new Date();
+            var statusClass = code.status === 'active' && !isExpired ? 'active' : 'revoked';
+            var statusText = code.status === 'active' && !isExpired
+                ? self._t('sync_active')
+                : self._t('sync_revoked');
+            var permLabel = code.permission === 'read'
+                ? self._t('sync_permission_read')
+                : self._t('sync_permission_write');
+            var permClass = code.permission === 'read' ? 'read' : 'read-write';
+            var expiresText = code.expires_days === 0
+                ? self._t('sync_expires_unlimited')
+                : (code.expires_at || '-');
+
+            html += '<tr>' +
+                '<td><span class="vx-sync-invite-code">' + self.escapeHtml(code.invite_code) + '</span></td>' +
+                '<td><span class="vx-sync-permission-badge ' + permClass + '">' + permLabel + '</span></td>' +
+                '<td>' + code.used_count + (code.max_uses > 0 ? '/' + code.max_uses : '') + '</td>' +
+                '<td>' + (isExpired ? '<span class="vx-sync-expired">' + expiresText + '</span>' : expiresText) + '</td>' +
+                '<td><span class="vx-sync-status-badge ' + statusClass + '">' + statusText + '</span></td>' +
+                '<td>' +
+                    (code.status === 'active'
+                        ? '<button class="vx-btn vx-btn-danger vx-btn-xs vx-sync-btn-xs" onclick="VX_SYNC.revokeInviteCode(' + code.id + ')">' + self._t('sync_revoke') + '</button>'
+                        : '') +
+                '</td>' +
+            '</tr>';
+        });
+        container.innerHTML = html;
+    },
+
+    async revokeInviteCode(codeId) {
+        if (!confirm(this._t('sync_revoke_invite_confirm'))) return;
+
+        try {
+            var resp = await this.wsRequest('invite_code_revoke_req', {
+                drive_id: this.currentDrive.drive_id,
+                code_id: codeId,
+            });
+            if (resp.status !== 1) return;
+            VXUI.showMsg(this._t('sync_invite_revoked'), 'success');
+            this.loadInviteCodes();
+        } catch (e) {
+            console.error('revoke failed', e);
+            VXUI.showMsg('撤销失败，请重试', 'error');
+        }
+    },
+
+    // ========== Join Request Operations ==========
+
+    async loadJoinRequests() {
+        if (!this.currentDrive || !this._canManagePermissions()) return;
+
+        try {
+            var resp = await this.wsRequest('join_request_list_req', {
+                drive_id: this.currentDrive.drive_id,
+            });
+            if (resp.status !== 1) return;
+            this._joinRequests = (resp.data && resp.data.requests) || [];
+            this.renderJoinRequestList();
+        } catch (e) {
+            console.error('loadJoinRequests error', e);
+        }
+    },
+
+    renderJoinRequestList() {
+        var container = document.getElementById('sync-join-request-list');
+        if (!this._joinRequests || this._joinRequests.length === 0) {
+            container.innerHTML = '<tr class="vx-sync-empty-row"><td colspan="6" data-tpl="sync_no_requests">暂无申请</td></tr>';
+            if (typeof VXUI !== 'undefined' && VXUI.translateContainer) VXUI.translateContainer(container);
+            return;
+        }
+
+        var html = '';
+        var self = this;
+        this._joinRequests.forEach(function(req) {
+            var permLabel = req.permission === 'read'
+                ? self._t('sync_permission_read')
+                : self._t('sync_permission_write');
+            var permClass = req.permission === 'read' ? 'read' : 'read-write';
+            var statusClass = req.status;
+            var statusText = self._t('sync_' + req.status);
+            var expiresText = req.expires_at || self._t('sync_expires_unlimited');
+
+            html += '<tr>' +
+                '<td>' + self.escapeHtml(req.applicant_name || '#' + req.applicant_uid) + '</td>' +
+                '<td><span class="vx-sync-permission-badge ' + permClass + '">' + permLabel + '</span></td>' +
+                '<td>' + expiresText + '</td>' +
+                '<td><span class="vx-sync-status-badge ' + statusClass + '">' + statusText + '</span></td>' +
+                '<td>' + req.created_at + '</td>' +
+                '<td>' +
+                    (req.status === 'pending'
+                        ? '<button class="vx-btn vx-btn-primary vx-btn-xs vx-sync-btn-xs" onclick="VX_SYNC.approveJoinRequest(' + req.id + ')">' + self._t('sync_approve') + '</button> ' +
+                          '<button class="vx-btn vx-btn-danger vx-btn-xs vx-sync-btn-xs" onclick="VX_SYNC.rejectJoinRequest(' + req.id + ')">' + self._t('sync_reject') + '</button>'
+                        : req.status === 'approved'
+                        ? '<button class="vx-btn vx-btn-danger vx-btn-xs vx-sync-btn-xs" onclick="VX_SYNC.revokeJoinRequest(' + req.id + ')">' + self._t('sync_revoke') + '</button>'
+                        : '') +
+                '</td>' +
+            '</tr>';
+        });
+        container.innerHTML = html;
+        if (typeof VXUI !== 'undefined' && VXUI.translateContainer) VXUI.translateContainer(container);
+    },
+
+    async approveJoinRequest(requestId) {
+        try {
+            var resp = await this.wsRequest('join_request_approve', {
+                drive_id: this.currentDrive.drive_id,
+                request_id: requestId,
+            });
+            if (resp.status !== 1) return;
+            VXUI.showMsg(this._t('sync_request_approved'), 'success');
+            this.loadJoinRequests();
+        } catch (e) {
+            console.error('approve failed', e);
+            VXUI.showMsg('批准失败，请重试', 'error');
+        }
+    },
+
+    async rejectJoinRequest(requestId) {
+        if (!confirm(this._t('sync_reject_confirm'))) return;
+        try {
+            var resp = await this.wsRequest('join_request_reject', {
+                drive_id: this.currentDrive.drive_id,
+                request_id: requestId,
+            });
+            if (resp.status !== 1) return;
+            VXUI.showMsg(this._t('sync_request_rejected'), 'success');
+            this.loadJoinRequests();
+        } catch (e) {
+            console.error('reject failed', e);
+            VXUI.showMsg('拒绝失败，请重试', 'error');
+        }
+    },
+
+    async revokeJoinRequest(requestId) {
+        if (!confirm(this._t('sync_revoke_permission_confirm'))) return;
+        try {
+            var resp = await this.wsRequest('join_request_revoke', {
+                drive_id: this.currentDrive.drive_id,
+                request_id: requestId,
+            });
+            if (resp.status !== 1) return;
+            VXUI.showMsg(this._t('sync_permission_revoked'), 'success');
+            this.loadJoinRequests();
+        } catch (e) {
+            console.error('revoke failed', e);
+            VXUI.showMsg('撤销失败，请重试', 'error');
+        }
+    },
+
+    // ========== Notification Operations ==========
+
+    async loadNotifications() {
+        try {
+            var resp = await this.wsRequest('notification_list_req', {});
+            if (resp.status !== 1) return;
+            this._notifications = (resp.data && resp.data.notifications) || [];
+            // Sync unread count with actual unread items in the list
+            var unreadInList = 0;
+            this._notifications.forEach(function(n) { if (!n.is_read) unreadInList++; });
+            this._unreadNotificationCount = unreadInList;
+            this.renderNotifications();
+            this.updateUnreadBadge();
+        } catch (e) {
+            console.error('loadNotifications error', e);
+        }
+    },
+
+    renderNotifications() {
+        var container = document.getElementById('sync-messages-list');
+        var markAllBtn = document.getElementById('sync-mark-all-read');
+
+        if (!this._notifications || this._notifications.length === 0) {
+            container.innerHTML = '<div class="vx-empty" id="sync-messages-empty"><div class="vx-empty-icon"><iconpark-icon name="message" size="48"></iconpark-icon></div><h3 class="vx-empty-title" data-tpl="sync_no_messages">暂无消息</h3></div>';
+            if (typeof VXUI !== 'undefined' && VXUI.translateContainer) VXUI.translateContainer(container);
+            if (markAllBtn) markAllBtn.style.display = 'none';
+            return;
+        }
+
+        if (markAllBtn) {
+            markAllBtn.style.display = this._unreadNotificationCount > 0 ? 'inline-block' : 'none';
+        }
+
+        var html = '';
+        var self = this;
+        this._notifications.forEach(function(n) {
+            var classes = 'vx-sync-message-item' + (n.is_read ? '' : ' unread');
+            html += '<div class="' + classes + '" onclick="VX_SYNC.openNotification(' + n.id + ')">' +
+                '<div class="vx-sync-message-header">' +
+                    '<span class="vx-sync-message-title">' + self.escapeHtml(n.title) + '</span>' +
+                    '<span class="vx-sync-message-time">' + n.created_at + '</span>' +
+                '</div>' +
+                (n.content ? '<div class="vx-sync-message-content">' + self.escapeHtml(n.content) + '</div>' : '') +
+            '</div>';
+        });
+        container.innerHTML = html;
+    },
+
+    async openNotification(id) {
+        var n = this._notifications.find(function(item) { return item.id === id; });
+        if (!n || n.is_read) return;
+
+        try {
+            await this.wsRequest('notification_mark_read', {
+                notification_id: id,
+            });
+            n.is_read = true;
+            this._unreadNotificationCount = Math.max(0, this._unreadNotificationCount - 1);
+            this.updateUnreadBadge();
+            this.renderNotifications();
+        } catch (e) {
+            console.error('mark read failed', e);
+        }
+    },
+
+    async markAllNotificationsRead() {
+        try {
+            await this.wsRequest('notification_mark_all_read', {});
+            this._notifications.forEach(function(n) { n.is_read = true; });
+            this._unreadNotificationCount = 0;
+            this.updateUnreadBadge();
+            this.renderNotifications();
+        } catch (e) {
+            console.error('mark all read failed', e);
+        }
+    },
+
+    updateUnreadBadge() {
+        var badge = document.getElementById('sync-unread-badge');
+        if (badge) {
+            if (this._unreadNotificationCount > 0) {
+                badge.textContent = this._unreadNotificationCount > 99 ? '99+' : this._unreadNotificationCount;
+                badge.style.display = 'inline-block';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+    },
+
+    async loadUnreadCount() {
+        try {
+            var resp = await this.wsRequest('unread_count_req', {});
+            if (resp.status !== 1) return;
+            this._unreadNotificationCount = (resp.data && resp.data.count) || 0;
+            this.updateUnreadBadge();
+        } catch (e) {
+            console.error('load unread count failed', e);
+        }
+    },
+
+    // ========== Permission Helper ==========
+
+    _currentUserHasWritePermission() {
+        if (this.isHost) return true;
+        return this._currentDrivePermission === 'read_write';
+    },
 };
