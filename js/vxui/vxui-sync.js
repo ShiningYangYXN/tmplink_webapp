@@ -179,6 +179,7 @@ var VX_SYNC = VX_SYNC || {
             hostLastPaths: null,
             hostPendingOps: null,
             syncTimer: null,
+            immediateSyncTimer: null,
             syncInProgress: false,
             scanInProgress: false,
             lastScanFingerprints: null,
@@ -251,8 +252,22 @@ var VX_SYNC = VX_SYNC || {
             console.warn('[SYNC] switchSession: session not found ' + driveId);
             return;
         }
+        // 切换前，将当前活跃 session 的镜像字段持久化回 session 对象
+        // （timers/state 等通过 this.xxx 赋值的字段需要写回，否则会丢失）
+        if (this.activeSessionId && this.activeSessionId !== driveId) {
+            var prevSession = this.sessions.get(this.activeSessionId);
+            if (prevSession) this._persistMirrorToSession(prevSession);
+        }
         this.activeSessionId = driveId;
-        // 同步镜像字段（所有旧代码 this.xxx 访问的来源）
+        this._loadSessionToMirror(session);
+
+        // 渲染 UI
+        this._renderSessionSwitcher();
+        this._renderActiveSession();
+    },
+
+    // 将 session 对象的字段加载到 this.xxx 镜像字段
+    _loadSessionToMirror(session) {
         this.currentDrive = session.drive;
         this.isHost = session.isHost;
         this._boundFolder = session.boundFolder;
@@ -272,6 +287,7 @@ var VX_SYNC = VX_SYNC || {
         this._hostConnectionMode = session.hostConnectionMode;
         this._downloads = session.downloads;
         this._pendingDownloads = session.pendingDownloads;
+        this._pendingDownloadTimeout = session.pendingDownloadTimeout;
         this._transferQueue = session.transferQueue;
         this._transferBusy = session.transferBusy;
         this._currentTransferSha1 = session.currentTransferSha1;
@@ -280,6 +296,7 @@ var VX_SYNC = VX_SYNC || {
         this._hostLastPaths = session.hostLastPaths;
         this._hostPendingOps = session.hostPendingOps;
         this._syncTimer = session.syncTimer;
+        this._immediateSyncTimer = session.immediateSyncTimer;
         this._syncInProgress = session.syncInProgress;
         this._scanInProgress = session.scanInProgress;
         this._lastScanFingerprints = session.lastScanFingerprints;
@@ -298,10 +315,59 @@ var VX_SYNC = VX_SYNC || {
         this._fsObserver = session.fsObserver;
         this._activities = session.activities;
         this._detailTab = session.detailTab;
+    },
 
-        // 渲染 UI
-        this._renderSessionSwitcher();
-        this._renderActiveSession();
+    // 将 this.xxx 镜像字段持久化回 session 对象
+    // （切换/清理前调用，确保 timers/state 等通过 this.xxx 赋值的字段不丢失）
+    _persistMirrorToSession(session) {
+        if (!session) return;
+        session.drive = this.currentDrive;
+        session.isHost = this.isHost;
+        session.boundFolder = this._boundFolder;
+        session.hostOnline = this._hostOnline;
+        session.permission = this._currentDrivePermission;
+        session.fileCache = this.fileCache;
+        session.localFiles = this._localFiles;
+        session.fileStatus = this._fileStatus;
+        session.fileProgress = this._fileProgress;
+        session.currentPath = this.currentPath;
+        session.peers = this.peers;
+        session.rtcPeerConnection = this.rtcPeerConnection;
+        session.peerConnections = this._peerConnections;
+        session.peerDeviceIds = this._peerDeviceIds;
+        session.dataChannel = this.dataChannel;
+        session.acceptDC = this.acceptDC;
+        session.hostConnectionMode = this._hostConnectionMode;
+        session.downloads = this._downloads;
+        session.pendingDownloads = this._pendingDownloads;
+        session.pendingDownloadTimeout = this._pendingDownloadTimeout;
+        session.transferQueue = this._transferQueue;
+        session.transferBusy = this._transferBusy;
+        session.currentTransferSha1 = this._currentTransferSha1;
+        session.transferStats = this._transferStats;
+        session.peerLastPaths = this._peerLastPaths;
+        session.hostLastPaths = this._hostLastPaths;
+        session.hostPendingOps = this._hostPendingOps;
+        session.syncTimer = this._syncTimer;
+        session.immediateSyncTimer = this._immediateSyncTimer;
+        session.syncInProgress = this._syncInProgress;
+        session.scanInProgress = this._scanInProgress;
+        session.lastScanFingerprints = this._lastScanFingerprints;
+        session.connState = this._connState;
+        session.reconnectTimer = this._reconnectTimer;
+        session.reconnectAttempt = this._reconnectAttempt;
+        session.iceTimeout = this._iceTimeout;
+        session.connectTimeout = this._connectTimeout;
+        session.offerInProgress = this._offerInProgress;
+        session.offerTimeout = this._offerTimeout;
+        session.pendingSignaling = this._pendingSignaling;
+        session.connectionMode = this._connectionMode;
+        session.relaySeq = this._relaySeq;
+        session.relayReceivedSeq = this._relayReceivedSeq;
+        session.syncStatus = this._syncStatus;
+        session.fsObserver = this._fsObserver;
+        session.activities = this._activities;
+        session.detailTab = this._detailTab;
     },
 
     // 渲染顶部的 session 切换器（tab 条）
@@ -5335,106 +5401,26 @@ var VX_SYNC = VX_SYNC || {
             // 静默切换镜像（不渲染 UI）
             var session = this.sessions.get(driveId);
             if (!session) return;
+            // 切换前持久化当前活跃 session 的镜像字段
+            if (prev) {
+                var prevSession = this.sessions.get(prev);
+                if (prevSession) this._persistMirrorToSession(prevSession);
+            }
             this.activeSessionId = driveId;
-            this.currentDrive = session.drive;
-            this.isHost = session.isHost;
-            this._boundFolder = session.boundFolder;
-            this._hostOnline = session.hostOnline;
-            this._currentDrivePermission = session.permission;
-            this.fileCache = session.fileCache;
-            this._localFiles = session.localFiles;
-            this._fileStatus = session.fileStatus;
-            this._fileProgress = session.fileProgress;
-            this.currentPath = session.currentPath;
-            this.peers = session.peers;
-            this.rtcPeerConnection = session.rtcPeerConnection;
-            this._peerConnections = session.peerConnections;
-            this._peerDeviceIds = session.peerDeviceIds;
-            this.dataChannel = session.dataChannel;
-            this.acceptDC = session.acceptDC;
-            this._hostConnectionMode = session.hostConnectionMode;
-            this._downloads = session.downloads;
-            this._pendingDownloads = session.pendingDownloads;
-            this._transferQueue = session.transferQueue;
-            this._transferBusy = session.transferBusy;
-            this._currentTransferSha1 = session.currentTransferSha1;
-            this._transferStats = session.transferStats;
-            this._peerLastPaths = session.peerLastPaths;
-            this._hostLastPaths = session.hostLastPaths;
-            this._hostPendingOps = session.hostPendingOps;
-            this._syncTimer = session.syncTimer;
-            this._syncInProgress = session.syncInProgress;
-            this._scanInProgress = session.scanInProgress;
-            this._lastScanFingerprints = session.lastScanFingerprints;
-            this._connState = session.connState;
-            this._reconnectTimer = session.reconnectTimer;
-            this._reconnectAttempt = session.reconnectAttempt;
-            this._iceTimeout = session.iceTimeout;
-            this._connectTimeout = session.connectTimeout;
-            this._offerInProgress = session.offerInProgress;
-            this._offerTimeout = session.offerTimeout;
-            this._pendingSignaling = session.pendingSignaling;
-            this._connectionMode = session.connectionMode;
-            this._relaySeq = session.relaySeq;
-            this._relayReceivedSeq = session.relayReceivedSeq;
-            this._syncStatus = session.syncStatus;
-            this._fsObserver = session.fsObserver;
-            this._activities = session.activities;
-            this._detailTab = session.detailTab;
+            this._loadSessionToMirror(session);
         }
         try {
             fn.call(this);
         } finally {
             if (prev !== driveId && prev) {
+                // 恢复前持久化目标 session 的镜像字段（fn 可能修改了 this.xxx）
+                var targetSession = this.sessions.get(driveId);
+                if (targetSession) this._persistMirrorToSession(targetSession);
                 // 恢复之前的活跃 session 镜像（不渲染 UI）
                 var prevSession = this.sessions.get(prev);
                 if (prevSession) {
                     this.activeSessionId = prev;
-                    this.currentDrive = prevSession.drive;
-                    this.isHost = prevSession.isHost;
-                    this._boundFolder = prevSession.boundFolder;
-                    this._hostOnline = prevSession.hostOnline;
-                    this._currentDrivePermission = prevSession.permission;
-                    this.fileCache = prevSession.fileCache;
-                    this._localFiles = prevSession.localFiles;
-                    this._fileStatus = prevSession.fileStatus;
-                    this._fileProgress = prevSession.fileProgress;
-                    this.currentPath = prevSession.currentPath;
-                    this.peers = prevSession.peers;
-                    this.rtcPeerConnection = prevSession.rtcPeerConnection;
-                    this._peerConnections = prevSession.peerConnections;
-                    this._peerDeviceIds = prevSession.peerDeviceIds;
-                    this.dataChannel = prevSession.dataChannel;
-                    this.acceptDC = prevSession.acceptDC;
-                    this._hostConnectionMode = prevSession.hostConnectionMode;
-                    this._downloads = prevSession.downloads;
-                    this._pendingDownloads = prevSession.pendingDownloads;
-                    this._transferQueue = prevSession.transferQueue;
-                    this._transferBusy = prevSession.transferBusy;
-                    this._currentTransferSha1 = prevSession.currentTransferSha1;
-                    this._transferStats = prevSession.transferStats;
-                    this._peerLastPaths = prevSession.peerLastPaths;
-                    this._hostLastPaths = prevSession.hostLastPaths;
-                    this._hostPendingOps = prevSession.hostPendingOps;
-                    this._syncTimer = prevSession.syncTimer;
-                    this._syncInProgress = prevSession.syncInProgress;
-                    this._scanInProgress = prevSession.scanInProgress;
-                    this._lastScanFingerprints = prevSession.lastScanFingerprints;
-                    this._connState = prevSession.connState;
-                    this._reconnectTimer = prevSession.reconnectTimer;
-                    this._reconnectAttempt = prevSession.reconnectAttempt;
-                    this._iceTimeout = prevSession.iceTimeout;
-                    this._connectTimeout = prevSession.connectTimeout;
-                    this._offerInProgress = prevSession.offerInProgress;
-                    this._offerTimeout = prevSession.offerTimeout;
-                    this._pendingSignaling = prevSession.pendingSignaling;
-                    this._connectionMode = prevSession.connectionMode;
-                    this._relaySeq = prevSession.relaySeq;
-                    this._relayReceivedSeq = prevSession.relayReceivedSeq;
-                    this._syncStatus = prevSession.syncStatus;
-                    this._fsObserver = prevSession.fsObserver;
-                    this._activities = prevSession.activities;
-                    this._detailTab = prevSession.detailTab;
+                    this._loadSessionToMirror(prevSession);
                 }
             }
         }
@@ -5805,6 +5791,10 @@ var VX_SYNC = VX_SYNC || {
     // 若 session 是当前活跃 session，同步清理 this.xxx 镜像字段。
     _cleanupSessionConnection(session) {
         if (!session) return;
+        // 若清理的是 active session，先持久化镜像字段，确保 session.xxx 持有最新的 timers/RTC 引用
+        if (this.activeSessionId === session.drive_id) {
+            this._persistMirrorToSession(session);
+        }
         console.log('[SYNC] Cleaning up session ' + session.drive_id + ': reconnectTimer=' + !!session.reconnectTimer + ' RTCPC=' + !!session.rtcPeerConnection + ' peerCons=' + Object.keys(session.peerConnections || {}).length);
 
         // 停止同步、心跳、FS 观察
@@ -5883,9 +5873,7 @@ var VX_SYNC = VX_SYNC || {
     _stopSessionSync(session) {
         if (!session) return;
         if (session.syncTimer) { clearTimeout(session.syncTimer); session.syncTimer = null; }
-        // 兼容旧字段名 _syncTimer / _immediateSyncTimer
-        if (session._syncTimer) { clearTimeout(session._syncTimer); session._syncTimer = null; }
-        if (session._immediateSyncTimer) { clearTimeout(session._immediateSyncTimer); session._immediateSyncTimer = null; }
+        if (session.immediateSyncTimer) { clearTimeout(session.immediateSyncTimer); session.immediateSyncTimer = null; }
         if (session.fsObserver) {
             try { session.fsObserver.disconnect(); } catch (e) {}
             session.fsObserver = null;
