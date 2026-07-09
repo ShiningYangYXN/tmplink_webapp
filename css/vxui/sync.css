@@ -1757,3 +1757,74 @@ label.vx-sync-radio input:checked + span {
         padding: 10px 12px;
     }
 }
+
+/* ========== Session 切换条（多盘并行） ========== */
+.vx-sync-session-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 8px 12px 0;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--vx-border);
+    background: var(--vx-bg-primary);
+}
+
+.vx-sync-session-tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 8px 8px 0 0;
+    background: var(--vx-bg-secondary);
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--vx-text-secondary);
+    border: 1px solid transparent;
+    border-bottom: none;
+    white-space: nowrap;
+    position: relative;
+    top: 1px;
+}
+
+.vx-sync-session-tab:hover {
+    background: var(--vx-bg-tertiary);
+}
+
+.vx-sync-session-tab.active {
+    background: var(--vx-bg-primary);
+    color: var(--vx-text-primary);
+    border-color: var(--vx-border);
+    border-bottom-color: var(--vx-bg-primary);
+}
+
+.vx-sync-session-name {
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.vx-sync-session-role {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    font-size: 10px;
+    font-weight: 600;
+    background: rgba(107, 114, 128, 0.15);
+    color: #6b7280;
+}
+
+.vx-sync-session-close {
+    background: none;
+    border: none;
+    color: var(--vx-text-muted);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 0 2px;
+}
+
+.vx-sync-session-close:hover {
+    color: var(--vx-danger);
+}
