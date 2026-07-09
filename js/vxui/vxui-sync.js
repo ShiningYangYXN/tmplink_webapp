@@ -6752,6 +6752,157 @@ var VX_SYNC = VX_SYNC || {
         }
     },
 
+    // ========== Folder Lock File ==========
+    // .tmpsync/drive.lock 实现物理文件夹排他性。
+    // 同一磁盘文件夹无论被哪个浏览器、哪个 tab 绑定，都会读取到同一个锁文件。
+    // 心跳每 1s 更新一次，3s 未更新视为同步盘不处于运行状态，可被覆盖。
+    _LOCK_FILE_NAME: 'drive.lock',
+    _LOCK_HEARTBEAT_INTERVAL_MS: 1000,    // 心跳间隔 1s（运行状态指示）
+    _LOCK_EXPIRE_MS: 3000,                // 锁过期阈值 3s
+
+    // 生成随机 nonce（用于写入后读回校验，防并发覆盖）
+    _generateLockNonce() {
+        return Math.random().toString(36).substring(2, 12) + Date.now().toString(36);
+    },
+
+    // 读取锁文件内容。返回 null 表示不存在或读取失败。
+    async _readDriveLockFile(folderHandle) {
+        if (!folderHandle) return null;
+        try {
+            var tmpDir = await folderHandle.getDirectoryHandle('.tmpsync', { create: false });
+            var fileHandle;
+            try {
+                fileHandle = await tmpDir.getFileHandle(this._LOCK_FILE_NAME, { create: false });
+            } catch (e) {
+                return null; // 锁文件不存在
+            }
+            var file = await fileHandle.getFile();
+            var text = await file.text();
+            return JSON.parse(text);
+        } catch (e) {
+            return null;
+        }
+    },
+
+    // 写入锁文件（覆盖式）。
+    async _writeDriveLockFile(folderHandle, lockData) {
+        if (!folderHandle) return false;
+        try {
+            var tmpDir = await folderHandle.getDirectoryHandle('.tmpsync', { create: true });
+            var fileHandle = await tmpDir.getFileHandle(this._LOCK_FILE_NAME, { create: true });
+            var writable = await fileHandle.createWritable();
+            await writable.write(JSON.stringify(lockData, null, 2));
+            await writable.close();
+            return true;
+        } catch (e) {
+            console.warn('[SYNC] Failed to write drive.lock:', e);
+            return false;
+        }
+    },
+
+    // 删除锁文件。
+    async _deleteDriveLockFile(folderHandle) {
+        if (!folderHandle) return;
+        try {
+            var tmpDir = await folderHandle.getDirectoryHandle('.tmpsync', { create: false });
+            await tmpDir.removeEntry(this._LOCK_FILE_NAME);
+        } catch (e) {
+            // 文件不存在或删除失败，忽略
+        }
+    },
+
+    // 校验锁文件是否过期
+    _isLockExpired(lockData) {
+        if (!lockData || !lockData.last_heartbeat) return true;
+        var lastHB = new Date(lockData.last_heartbeat).getTime();
+        if (isNaN(lastHB)) return true;
+        return (Date.now() - lastHB) > this._LOCK_EXPIRE_MS;
+    },
+
+    // 尝试占用文件夹锁。返回 true 表示成功，false 表示冲突。
+    async _acquireFolderLock(session) {
+        if (!session || !session.boundFolder || !session.boundFolder.handle) return true;
+        var folderHandle = session.boundFolder.handle;
+        var nonce = this._generateLockNonce();
+
+        // 1. 读取现有锁文件
+        var existing = await this._readDriveLockFile(folderHandle);
+        if (existing) {
+            var isOwn = (existing.tab_id === this._tabID &&
+                         existing.device_id === this.getDeviceId() &&
+                         existing.uid === TL.uid);
+            var isExpired = this._isLockExpired(existing);
+
+            if (!isOwn && !isExpired) {
+                // 锁属于其它 tab/device 且未过期 → 冲突
+                console.warn('[SYNC] Folder locked by another session:', existing);
+                return false;
+            }
+            // isOwn 或 isExpired → 可以覆盖
+        }
+
+        // 2. 写入新锁文件
+        var now = new Date().toISOString();
+        var lockData = {
+            drive_id: session.drive_id,
+            uid: TL.uid,
+            device_id: this.getDeviceId(),
+            tab_id: this._tabID,
+            role: session.role,
+            nonce: nonce,
+            locked_at: existing ? existing.locked_at : now,
+            last_heartbeat: now
+        };
+        var written = await this._writeDriveLockFile(folderHandle, lockData);
+        if (!written) return false;
+
+        // 3. 立即读回，校验 nonce（防并发覆盖）
+        var readback = await this._readDriveLockFile(folderHandle);
+        if (!readback || readback.nonce !== nonce) {
+            console.warn('[SYNC] Folder lock nonce mismatch, concurrent acquisition detected');
+            return false;
+        }
+
+        session.lockNonce = nonce;
+        console.log('[SYNC] Folder lock acquired for drive ' + session.drive_id + ' nonce=' + nonce);
+        return true;
+    },
+
+    // 更新锁文件 heartbeat（每 1s 定时调用，作为同步盘运行状态指示）。
+    async _touchDriveLockFile(session) {
+        if (!session || !session.boundFolder || !session.boundFolder.handle) return;
+        if (!session.lockNonce) return; // 未持有锁
+        var folderHandle = session.boundFolder.handle;
+
+        // 读取当前锁，确认仍属于本 session
+        var current = await this._readDriveLockFile(folderHandle);
+        if (!current || current.nonce !== session.lockNonce) {
+            // 锁已被其它 session 覆盖，清除本地 nonce
+            console.warn('[SYNC] Folder lock lost (nonce mismatch) for drive ' + session.drive_id);
+            session.lockNonce = null;
+            return;
+        }
+
+        // 更新 heartbeat
+        current.last_heartbeat = new Date().toISOString();
+        await this._writeDriveLockFile(folderHandle, current);
+    },
+
+    // 释放文件夹锁（leaveDrive / 页面卸载时调用）。
+    async _releaseFolderLock(session) {
+        if (!session || !session.boundFolder || !session.boundFolder.handle) return;
+        if (!session.lockNonce) return;
+        var folderHandle = session.boundFolder.handle;
+
+        // 确认锁仍属于本 session 再删除
+        var current = await this._readDriveLockFile(folderHandle);
+        if (current && current.nonce === session.lockNonce) {
+            await this._deleteDriveLockFile(folderHandle);
+            console.log('[SYNC] Folder lock released for drive ' + session.drive_id);
+        }
+        session.lockNonce = null;
+    },
+
     // ========== .tmpsync State Persistence ==========
     // The .tmpsync directory stores sync state (file path tracking, etc.)
     // It is excluded from sync scanning and never transferred between nodes.
