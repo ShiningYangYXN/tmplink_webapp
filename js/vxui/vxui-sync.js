@@ -3278,7 +3278,7 @@ var VX_SYNC = VX_SYNC || {
             }
 
             // Check if this is a shared drive (user is not the owner)
-            var isShared = !isHost && drive.host_uid !== VX_UID;
+            var isShared = !isHost && drive.host_uid !== TL.uid;
             var sharedTagHtml = isShared ? '<span class="vx-sync-drive-tag-shared">' + this._t('sync_shared') + '</span>' : '';
 
             return '<div class="vx-sync-drive-card" onclick="VX_SYNC.enterDrive(\'' + drive.drive_id + '\')">' +
