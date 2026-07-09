@@ -832,8 +832,8 @@ var VX_SYNC = VX_SYNC || {
 
             case 'peer_file_report':
                 if (!this.isHost) break;
-                console.log('[SYNC] Received peer_file_report via WSS: ' + (payload.files ? payload.files.length : 0) + ' files, ' + (payload.deleted ? payload.deleted.length : 0) + ' deleted');
-                this.handlePeerFileReport(payload.files || [], payload.deleted || [], msg.from_device);
+                console.log('[SYNC] Received peer_file_report via WSS: ' + (payload.files ? payload.files.length : 0) + ' files, ' + (payload.deleted ? payload.deleted.length : 0) + ' deleted' + (payload.folder_changed ? ' (folder changed)' : ''));
+                this.handlePeerFileReport(payload.files || [], payload.deleted || [], msg.from_device, payload.folder_changed === true);
                 break;
 
             case 'file_report_req':
@@ -1122,7 +1122,12 @@ var VX_SYNC = VX_SYNC || {
     },
     
     // ========== Bidirectional Sync: Peer → Host ==========
-    async sendPeerFileReport() {
+    // folderChanged: true when Peer just switched bound folder. In that case
+    // Peer's _peerLastPaths has been reset, so no deletions are detected; the
+    // flag tells Host to also reset its record of what Peer had, so Host does
+    // NOT propagate "missing on Peer" as deletions to itself. Instead Host's
+    // files are treated as new files Peer should download.
+    async sendPeerFileReport(folderChanged) {
         if (this.isHost) return;
         if (!this._boundFolder || !this._boundFolder.handle) {
             console.log('[SYNC] Peer has no bound folder, skipping file report');
@@ -1179,8 +1184,8 @@ var VX_SYNC = VX_SYNC || {
                 this.addActivity('delete', dname + ' (\u672c\u673a)');
             }
 
-            console.log('[SYNC] Peer sending file report to Host: ' + report.length + ' files, ' + deletedFiles.length + ' deleted');
-            this.sendP2PMessage('peer_file_report', this._getHostPersistentId(), { files: report, deleted: deletedFiles });
+            console.log('[SYNC] Peer sending file report to Host: ' + report.length + ' files, ' + deletedFiles.length + ' deleted' + (folderChanged ? ' (folder changed)' : ''));
+            this.sendP2PMessage('peer_file_report', this._getHostPersistentId(), { files: report, deleted: deletedFiles, folder_changed: !!folderChanged });
             // Persist state to .tmpsync/state.json
             this._saveSyncState();
         } catch (e) {
@@ -1575,7 +1580,7 @@ var VX_SYNC = VX_SYNC || {
     //   - Only on Host + Peer deleted it → Host should also delete (propagate deletion)
     //   - Only on Peer + Host never had it → Peer uploads (new file)
     //   - Only on Peer + Host deleted it → Peer should also delete (propagate deletion)
-    async handlePeerFileReport(peerFiles, peerDeleted, fromDevice) {
+    async handlePeerFileReport(peerFiles, peerDeleted, fromDevice, folderChanged) {
         if (!this.isHost) return;
         if (!this._boundFolder || !this._boundFolder.handle) {
             console.log('[SYNC] Host has no bound folder, skipping delta computation');
@@ -1620,8 +1625,12 @@ var VX_SYNC = VX_SYNC || {
                 peerMap[pf.path] = pf;
             }
 
-            // Build set of Peer paths that existed last sync
-            var peerHadPath = this._peerLastPaths || {};
+            // Build set of Peer paths that existed last sync.
+            // When Peer just switched folders, Host must NOT propagate "missing
+            // on Peer" as deletions to itself — the files are only missing
+            // because Peer bound a fresh folder. Reset the record so Host's
+            // files are treated as new files Peer should download instead.
+            var peerHadPath = folderChanged ? {} : (this._peerLastPaths || {});
             // Build set of Host paths that existed last sync
             var hostHadPath = this._hostLastPaths || {};
 
@@ -1633,14 +1642,18 @@ var VX_SYNC = VX_SYNC || {
             var inSync = 0;
 
             // 1. Process Peer-reported deletions: Host should delete these too.
-            // Build a set for fast lookup so step 2 can skip already-handled paths.
+            // Skip this entirely when Peer just switched folders — the
+            // "deletions" are an artifact of the folder change, not real
+            // deletions. Build the set for step 2 lookup regardless.
             var peerDeletedSet = {};
-            (peerDeleted || []).forEach(function(delPath) {
-                peerDeletedSet[delPath] = true;
-                if (hostMap[delPath]) {
-                    deleteOnHost.push(hostMap[delPath]);
-                }
-            });
+            if (!folderChanged) {
+                (peerDeleted || []).forEach(function(delPath) {
+                    peerDeletedSet[delPath] = true;
+                    if (hostMap[delPath]) {
+                        deleteOnHost.push(hostMap[delPath]);
+                    }
+                });
+            }
 
             // 2. Collect all unique file paths from both sides
             var allPaths = {};
@@ -1759,12 +1772,11 @@ var VX_SYNC = VX_SYNC || {
                 delete_on_peer: deleteOnPeer
             });
 
-            if (download.length > 0) {
-                this.addActivity('sync_push', this._t('sync_act_push_to_peer').replace('{n}', download.length));
-            }
-            if (upload.length > 0) {
-                this.addActivity('sync_pull', this._t('sync_act_wait_peer_upload').replace('{n}', upload.length));
-            }
+            // Only log deletion activities — download/upload are internal sync
+            // operations tracked by 'sync_received' and 'upload' activities on
+            // the Peer side. Showing 'sync_push'/'sync_pull' here is misleading
+            // because they fire on every delta cycle (including echo reports
+            // where Peer re-reports files it just received from Host).
             if (deleteOnHost.length > 0) {
                 this.addActivity('sync_delete', this._t('sync_act_host_delete').replace('{n}', deleteOnHost.length));
             }
@@ -3730,12 +3742,19 @@ var VX_SYNC = VX_SYNC || {
         this.isHost = (hostDeviceId !== '' && hostDeviceId === myDeviceId);
         console.log('[SYNC] Role check: my_device=' + myDeviceId + ' host_device=' + hostDeviceId + ' → isHost=' + this.isHost);
 
-        // Set permission for shared drive users
-        this._currentDrivePermission = this.isHost ? 'read_write' : (drive.permission || null);
-        // Hide/show permissions tab based on ownership
+        // Set permission for shared drive users.
+        // The drive owner always has read_write permission and can manage
+        // permissions regardless of whether they are on the Host or Peer side.
+        var isOwner = String(drive.host_uid) === String(TL.uid);
+        if (this.isHost || isOwner) {
+            this._currentDrivePermission = 'read_write';
+        } else {
+            this._currentDrivePermission = drive.permission || null;
+        }
+        // Show permissions tab for Host OR drive owner (even on Peer side)
         var permTab = document.getElementById('sync-tab-permissions');
         if (permTab) {
-            permTab.style.display = this.isHost ? 'flex' : 'none';
+            permTab.style.display = (this.isHost || isOwner) ? 'flex' : 'none';
         }
 
         this._hostOnline = this.isHost ? true : (drive.host_online === 1 || drive.host_online === true);
@@ -6035,8 +6054,10 @@ var VX_SYNC = VX_SYNC || {
             if (!this.isHost) {
                 var dc = this.acceptDC;
                 if (dc && dc.readyState === 'open') {
-                    console.log('[SYNC] Peer folder bound after DC open, sending file report');
-                    this.sendPeerFileReport();
+                    console.log('[SYNC] Peer folder bound after DC open, sending file report (folder_changed=true)');
+                    // Pass folderChanged=true so Host does not mistake missing
+                    // files for deletions on this first report.
+                    this.sendPeerFileReport(true);
                 }
             } else {
                 // Host: re-list files and send to all connected Peers, then request fresh peer_file_report
@@ -6128,6 +6149,15 @@ var VX_SYNC = VX_SYNC || {
         this.addActivity('change_folder', dirHandle.name);
         this.toastSuccess(this._t('sync_folder_bound').replace('{name}', dirHandle.name));
 
+        // Reset Peer-side last-sync state before loading the new folder's
+        // state. The old _peerLastPaths belongs to the previous folder and
+        // must NOT leak into the new folder's sync — otherwise every file
+        // from the old folder would be reported as "deleted", and Host would
+        // propagate those phantom deletions to itself, wiping Host's files.
+        if (!this.isHost) {
+            this._peerLastPaths = null;
+        }
+
         // Load persisted sync state from .tmpsync/state.json in new folder
         await this._loadSyncState();
 
@@ -6138,8 +6168,8 @@ var VX_SYNC = VX_SYNC || {
         if (!this.isHost) {
             var dc = this.acceptDC;
             if (dc && dc.readyState === 'open') {
-                console.log('[SYNC] Peer folder changed after DC open, sending file report');
-                this.sendPeerFileReport();
+                console.log('[SYNC] Peer folder changed after DC open, sending file report (folder_changed=true)');
+                this.sendPeerFileReport(true);
             }
         } else {
             // Host: re-list files and send to all connected Peers, then request fresh peer_file_report
