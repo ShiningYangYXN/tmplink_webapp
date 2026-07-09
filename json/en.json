@@ -1488,5 +1488,14 @@
     "sync_type_drive_deleted": "Drive deleted",
     "sync_type_permission_expired": "Permission expired",
     "read_only_permission_denied": "Read-only permission denied for write operations",
-    "sync_no_permission_error": "Permission expired or revoked, returning to drive list"
+    "sync_no_permission_error": "Permission expired or revoked, returning to drive list",
+    "sync_join_status_pending": "Under Review",
+    "sync_join_status_approved": "Approved",
+    "sync_join_status_rejected": "Rejected",
+    "sync_join_now": "Join",
+    "sync_dismiss": "Dismiss",
+    "sync_join_pending_hint": "Waiting for owner approval",
+    "sync_join_approved_tip": "Your join request was approved: \"{name}\"",
+    "sync_join_rejected_tip": "Your join request was rejected: \"{name}\"",
+    "sync_join_not_approved": "This request has not been approved yet"
 }

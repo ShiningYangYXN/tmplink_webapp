@@ -1485,5 +1485,14 @@
     "sync_type_drive_deleted": "同步盘已被删除",
     "sync_type_permission_expired": "权限已过期",
     "read_only_permission_denied": "当前权限为只读，无法进行写入操作",
-    "sync_no_permission_error": "权限已过期或已被撤销，即将返回同步盘列表"
+    "sync_no_permission_error": "权限已过期或已被撤销，即将返回同步盘列表",
+    "sync_join_status_pending": "审核中",
+    "sync_join_status_approved": "已批准",
+    "sync_join_status_rejected": "已拒绝",
+    "sync_join_now": "加入",
+    "sync_dismiss": "忽略",
+    "sync_join_pending_hint": "等待所有者审核",
+    "sync_join_approved_tip": "你的加入申请已批准：「{name}」",
+    "sync_join_rejected_tip": "你的加入申请被拒绝：「{name}」",
+    "sync_join_not_approved": "该申请尚未批准"
 }

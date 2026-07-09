@@ -1676,6 +1676,56 @@ label.vx-sync-radio input:checked + span {
     color: #8b5cf6;
 }
 
+/* ==================== Pending Join Request Cards ==================== */
+
+/* Pending-review cards use a dashed border to distinguish them from joined drives. */
+.vx-sync-drive-card-pending {
+    border: 1px dashed rgba(245, 158, 11, 0.45);
+    background: linear-gradient(180deg, rgba(245, 158, 11, 0.04) 0%, var(--vx-bg-primary) 60%);
+}
+
+.vx-sync-drive-card-pending:hover {
+    border-color: rgba(245, 158, 11, 0.7);
+}
+
+.vx-sync-drive-card-approved {
+    border: 1px dashed rgba(16, 185, 129, 0.5);
+    background: linear-gradient(180deg, rgba(16, 185, 129, 0.05) 0%, var(--vx-bg-primary) 60%);
+}
+
+.vx-sync-drive-card-approved:hover {
+    border-color: rgba(16, 185, 129, 0.75);
+}
+
+.vx-sync-drive-card-rejected {
+    border: 1px dashed rgba(239, 68, 68, 0.4);
+    background: linear-gradient(180deg, rgba(239, 68, 68, 0.04) 0%, var(--vx-bg-primary) 60%);
+    opacity: 0.85;
+}
+
+.vx-sync-drive-tag-pending {
+    background: rgba(245, 158, 11, 0.14);
+    color: #d97706;
+}
+
+.vx-sync-drive-tag-approved {
+    background: rgba(16, 185, 129, 0.14);
+    color: #059669;
+}
+
+.vx-sync-drive-tag-rejected {
+    background: rgba(239, 68, 68, 0.12);
+    color: #dc2626;
+}
+
+.vx-sync-drive-pending-hint {
+    font-size: 12px;
+    color: var(--vx-text-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
 /* ==================== Mobile Responsive for New Components ==================== */
 @media (max-width: 768px) {
     .vx-sync-main-tab {

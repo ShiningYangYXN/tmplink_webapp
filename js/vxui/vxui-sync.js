@@ -52,6 +52,7 @@ var VX_SYNC = VX_SYNC || {
     _mainTab: 'drives',       // 'drives' | 'messages' - active main tab
     _inviteCodes: [],         // Current invite codes for the drive
     _joinRequests: [],        // Current join requests for the drive
+    _myPendingRequests: [],   // Applicant's own join requests (pending/approved/rejected) for card display
     _notifications: [],       // User's notifications
     _unreadNotificationCount: 0, // Count of unread notifications
     _currentDrivePermission: null, // 'read' or 'read_write' for shared drive users
@@ -340,6 +341,7 @@ var VX_SYNC = VX_SYNC || {
         this._drivesLoadSucceeded = false;
         this._deviceNameLoaded = false;
         this.drives = [];
+        this._myPendingRequests = [];
         this.currentDrive = null;
         this.isHost = false;
     },
@@ -953,8 +955,109 @@ var VX_SYNC = VX_SYNC || {
         }
         this.renderDriveList();
         this.loadUnreadCount();
+        // Also load the applicant's own pending join requests so the
+        // "审核中" / "可加入" cards render (and persist across reloads).
+        this.loadMyJoinRequests();
     },
-    
+
+    // Fetch the applicant's own join requests (pending/approved/rejected)
+    // and merge them into the drive-list rendering as pending-review cards.
+    async loadMyJoinRequests() {
+        if (!TL.api_token) return;
+        try {
+            const resp = await this.wsRequest('my_join_requests_req', {});
+            if (resp.status !== 1) return;
+            var list = (resp.data && resp.data.requests) || [];
+            // Drop requests whose drive already appears in the joined list
+            // (e.g. the applicant already joined after approval).
+            var self = this;
+            list = list.filter(function(r) {
+                return !self.drives.some(function(d) { return d.drive_id === r.drive_id; });
+            });
+            this._myPendingRequests = list;
+            this.renderDriveList();
+        } catch (e) {
+            console.warn('[SYNC] loadMyJoinRequests failed', e);
+        }
+    },
+
+    // Real-time status update pushed by the backend when a host
+    // approves/rejects the applicant's join request. The payload carries
+    // { request_id, status, drive_name }. We refresh from the server so the
+    // card reflects the authoritative state.
+    _handleJoinRequestStatus(msg) {
+        var payload = msg.payload || {};
+        if (typeof payload === 'string') {
+            try { payload = JSON.parse(payload); } catch(e) { return; }
+        }
+        // BroadcastToUser puts extra fields at top level — merge msg + payload.
+        var status = payload.status || msg.status;
+        var driveName = payload.drive_name || msg.drive_name || '';
+        console.log('[SYNC] join_request_status: drive=' + msg.drive_id + ' status=' + status);
+
+        // Optimistically update the local pending card so the UI reacts
+        // instantly, then re-fetch authoritative state.
+        var driveId = msg.drive_id;
+        for (var i = 0; i < this._myPendingRequests.length; i++) {
+            if (this._myPendingRequests[i].drive_id === driveId) {
+                this._myPendingRequests[i].status = status;
+                if (driveName) {
+                    this._myPendingRequests[i].drive_name = driveName;
+                }
+                break;
+            }
+        }
+        this.renderDriveList();
+
+        if (status === 'approved') {
+            VXUI.showMsg(this._t('sync_join_approved_tip').replace('{name}', driveName || ''), 'success');
+        } else if (status === 'rejected') {
+            VXUI.showMsg(this._t('sync_join_rejected_tip').replace('{name}', driveName || ''), 'warn');
+        }
+
+        // Refresh notifications + authoritative pending list.
+        this.loadUnreadCount();
+        var self = this;
+        setTimeout(function() { self.loadMyJoinRequests(); }, 500);
+    },
+
+    // Enter a drive from an approved pending card. The applicant already has
+    // an approved join_request record, so drive_enter's permission check will
+    // pass without needing a drive_key.
+    async joinApprovedDrive(driveId) {
+        var req = this._myPendingRequests.find(function(r) { return r.drive_id === driveId; });
+        if (!req || req.status !== 'approved') {
+            VXUI.showMsg(this._t('sync_join_not_approved'), 'error');
+            return;
+        }
+        // Build a minimal drive object and inject it into this.drives so
+        // enterDrive() can find it.
+        var drive = {
+            drive_id: req.drive_id,
+            name: req.drive_name,
+            host_uid: req.host_uid,
+            host_device_id: req.host_device_id,
+            peer_count: 0,
+            peer_limit: 10,
+            host_online: req.host_online,
+            created_at: req.created_at,
+            server_addr: req.server_addr || ''
+        };
+        this.drives = this.drives.filter(function(d) { return d.drive_id !== drive.drive_id; });
+        this.drives.unshift(drive);
+        // Remove the pending card — the drive now appears as a normal card.
+        this._myPendingRequests = this._myPendingRequests.filter(function(r) { return r.drive_id !== driveId; });
+        this.renderDriveList();
+        // Enter the drive as a Peer.
+        this.enterDrive(driveId);
+    },
+
+    // Dismiss a rejected pending card from the drive list.
+    dismissMyPendingRequest(driveId) {
+        this._myPendingRequests = this._myPendingRequests.filter(function(r) { return r.drive_id !== driveId; });
+        this.renderDriveList();
+    },
+
     async createDrive(name) {
         this.trackUI('sync_create_drive');
         console.log('[SYNC] Creating drive: name="' + (name || '(default)') + '"');
@@ -3255,7 +3358,9 @@ var VX_SYNC = VX_SYNC || {
             return;
         }
 
-        if (this.drives.length === 0) {
+        var pendingRequests = this._myPendingRequests || [];
+
+        if (this.drives.length === 0 && pendingRequests.length === 0) {
             container.innerHTML = `
                 <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;text-align:center;grid-column:1/-1">
                     <iconpark-icon name="link-cloud" size="48" style="color:var(--vx-text-muted);margin-bottom:16px"></iconpark-icon>
@@ -3263,7 +3368,12 @@ var VX_SYNC = VX_SYNC || {
                 </div>`;
             return;
         }
-        
+
+        var self = this;
+        var pendingCardsHtml = pendingRequests.map(function(req) {
+            return self._renderPendingRequestCard(req);
+        }).join('');
+
         container.innerHTML = this.drives.map(drive => {
             var myDeviceId = this.getDeviceId();
             var isHost = (drive.host_device_id && drive.host_device_id === myDeviceId);
@@ -3328,7 +3438,69 @@ var VX_SYNC = VX_SYNC || {
                     '<div class="vx-sync-drive-action-area">' + actionHtml + '</div>' +
                 '</div>' +
             '</div>';
-        }).join('');
+        }).join('') + pendingCardsHtml;
+    },
+
+    // Render a pending-review card for one of the applicant's own join
+    // requests. Card states: pending (审核中) / approved (可加入) / rejected (已拒绝).
+    _renderPendingRequestCard(req) {
+        var driveName = this.escapeHtml(req.drive_name || this._t('sync_drive_unnamed'));
+        var created = this.formatDate(req.created_at);
+        var status = req.status || 'pending';
+
+        var statusBadgeHtml;
+        var actionHtml;
+        var cardCls = 'vx-sync-drive-card vx-sync-drive-card-pending';
+
+        if (status === 'approved') {
+            cardCls += ' vx-sync-drive-card-approved';
+            statusBadgeHtml = '<span class="vx-sync-drive-tag vx-sync-drive-tag-approved">' + this._t('sync_join_status_approved') + '</span>';
+            actionHtml = '<button class="vx-btn vx-btn-primary vx-btn-sm vx-sync-drive-action" onclick="VX_SYNC.joinApprovedDrive(\'' + req.drive_id + '\'); event.stopPropagation();" title="' + this._t('sync_join_now') + '">' +
+                '<iconpark-icon name="link"></iconpark-icon>' +
+                '<span>' + this._t('sync_join_now') + '</span>' +
+                '</button>';
+        } else if (status === 'rejected') {
+            cardCls += ' vx-sync-drive-card-rejected';
+            statusBadgeHtml = '<span class="vx-sync-drive-tag vx-sync-drive-tag-rejected">' + this._t('sync_join_status_rejected') + '</span>';
+            actionHtml = '<button class="vx-btn vx-btn-ghost vx-btn-sm vx-sync-drive-action" onclick="VX_SYNC.dismissMyPendingRequest(\'' + req.drive_id + '\'); event.stopPropagation();" title="' + this._t('sync_dismiss') + '">' +
+                '<span>' + this._t('sync_dismiss') + '</span>' +
+                '</button>';
+        } else {
+            // pending
+            statusBadgeHtml = '<span class="vx-sync-drive-tag vx-sync-drive-tag-pending">' + this._t('sync_join_status_pending') + '</span>';
+            actionHtml = '<button class="vx-btn vx-btn-ghost vx-btn-sm vx-sync-drive-action" disabled title="' + this._t('sync_join_status_pending') + '">' +
+                '<iconpark-icon name="time"></iconpark-icon>' +
+                '<span>' + this._t('sync_join_status_pending') + '</span>' +
+                '</button>';
+        }
+
+        var permLabel = req.permission === 'read_write' ? this._t('sync_permission_write') : this._t('sync_permission_read');
+        var metaHtml = '<span>' + permLabel + '</span>' +
+            '<span class="vx-sync-drive-meta-sep">·</span>' +
+            '<span>' + created + '</span>';
+
+        return '<div class="' + cardCls + '" onclick="VX_SYNC._pendingCardClick(\'' + req.drive_id + '\',\'' + status + '\')">' +
+            '<div class="vx-sync-drive-card-head">' +
+                '<div class="vx-sync-drive-icon">' +
+                    '<iconpark-icon name="network-drive" size="28"></iconpark-icon>' +
+                '</div>' +
+                '<div class="vx-sync-drive-head-text">' +
+                    '<h3>' + driveName + ' ' + statusBadgeHtml + '</h3>' +
+                    '<div class="vx-sync-drive-meta">' + metaHtml + '</div>' +
+                '</div>' +
+            '</div>' +
+            '<div class="vx-sync-drive-foot">' +
+                '<span class="vx-sync-drive-pending-hint">' + this._t('sync_join_pending_hint') + '</span>' +
+                '<div class="vx-sync-drive-action-area">' + actionHtml + '</div>' +
+            '</div>' +
+        '</div>';
+    },
+
+    // Click handler for pending cards: only approved cards enter the drive.
+    _pendingCardClick(driveId, status) {
+        if (status === 'approved') {
+            this.joinApprovedDrive(driveId);
+        }
     },
     
     renderDetail() {
@@ -3680,7 +3852,34 @@ var VX_SYNC = VX_SYNC || {
             if (resp.status !== 1) return;
             VXUI.showMsg(this._t('sync_join_request_submitted'), 'success');
             this.hideJoinDrive();
-            this.loadDrives();
+
+            // Immediately render a "审核中" card from the response data so
+            // the applicant gets instant feedback without waiting for
+            // loadMyJoinRequests to round-trip.
+            var data = resp.data || {};
+            var request = data.request || {};
+            var drive = data.drive || {};
+            var pendingItem = {
+                id: request.id,
+                drive_id: request.drive_id || drive.drive_id,
+                drive_name: drive.drive_name || drive.name || '',
+                host_uid: drive.host_uid,
+                host_device_id: drive.host_device_id,
+                host_online: drive.host_online,
+                server_addr: drive.server_addr || '',
+                permission: request.permission,
+                status: request.status || 'pending',
+                created_at: request.created_at || new Date().toISOString().replace('T', ' ').substring(0, 19)
+            };
+            // Avoid duplicates (re-applying for the same drive).
+            this._myPendingRequests = this._myPendingRequests.filter(function(r) {
+                return r.drive_id !== pendingItem.drive_id;
+            });
+            this._myPendingRequests.unshift(pendingItem);
+            this.renderDriveList();
+
+            // Re-fetch authoritative state in the background.
+            this.loadMyJoinRequests();
         } catch (e) {
             console.error('join request failed', e);
             VXUI.showMsg('请求失败，请重试', 'error');
@@ -4721,6 +4920,14 @@ var VX_SYNC = VX_SYNC || {
 
             case 'new_notification':
                 this.loadUnreadCount();
+                // A new notification may carry the approval/rejection outcome for
+                // one of our pending join requests — refresh the pending cards.
+                this.loadMyJoinRequests();
+                break;
+
+            // ========== Join request status update (real-time applicant feedback) ==========
+            case 'join_request_status':
+                this._handleJoinRequestStatus(msg);
                 break;
 
             // ========== Presence (peer online/offline) ==========
@@ -4802,6 +5009,7 @@ var VX_SYNC = VX_SYNC || {
             case 'invite_code_revoke_resp':
             case 'join_request_apply_resp':
             case 'join_request_list_resp':
+            case 'my_join_requests_resp':
             case 'join_request_approve_resp':
             case 'join_request_reject_resp':
             case 'join_request_revoke_resp':
