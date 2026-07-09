@@ -743,6 +743,28 @@ var VX_SYNC = VX_SYNC || {
                                     name: data.handle.name,
                                     handle: data.handle
                                 };
+
+                                // 多 session：同步写入 session 并获取文件夹锁文件
+                                var session = self._getActiveSession();
+                                if (session) {
+                                    session.boundFolder = self._boundFolder;
+                                    var locked = await self._acquireFolderLock(session);
+                                    if (!locked) {
+                                        console.warn('[SYNC] Folder lock acquisition failed for restored folder');
+                                        VXUI.showMsg(self._t('sync_folder_locked_other_tab'), 'warning');
+                                        self._boundFolder = null;
+                                        session.boundFolder = null;
+                                        self._updateFolderPathDisplay();
+                                        resolve(null);
+                                        return;
+                                    }
+                                    self._bcast('drive_locked', {
+                                        drive_id: session.drive_id,
+                                        role: session.role,
+                                        folder_name: session.boundFolder.name
+                                    });
+                                }
+
                                 self._updateFolderPathDisplay();
                                 // Load persisted sync state from .tmpsync/state.json
                                 self._loadSyncState();
@@ -4247,42 +4269,50 @@ var VX_SYNC = VX_SYNC || {
 
         this.trackUI('sync_enter_drive');
         console.log('[SYNC] Entering drive: id=' + driveId + ' name=' + (drive.name || drive.drive_name || '(unnamed)') + ' host_device=' + (drive.host_device_id || 'none') + ' my_device=' + this.getDeviceId());
+
+        // 若该 drive 已有 session，直接切换（多 session 并行场景）
+        if (this.sessions.has(driveId)) {
+            console.log('[SYNC] Session already exists for ' + driveId + ', switching');
+            this.switchSession(driveId);
+            return;
+        }
+
         this.showLoading('正在加载同步盘信息...');
 
-        if (this.currentDrive && this.currentDrive.drive_id !== driveId) {
-            console.log('[SYNC] Leaving current drive to enter new one');
-            this._cleanupConnection();
-            this._boundFolder = null;
-        }
-
-        this.currentDrive = drive;
-        this.fileCache.clear();
-        this.currentPath = '/';
-        this.peers = [];
-
         // Determine Host by device_id: only the device that created the drive is Host.
-        // This prevents same-user different-device from acting as Host.
         var myDeviceId = this.getDeviceId();
         var hostDeviceId = drive.host_device_id || '';
-        this.isHost = (hostDeviceId !== '' && hostDeviceId === myDeviceId);
-        console.log('[SYNC] Role check: my_device=' + myDeviceId + ' host_device=' + hostDeviceId + ' → isHost=' + this.isHost);
+        var isHost = (hostDeviceId !== '' && hostDeviceId === myDeviceId);
+        var role = isHost ? 'host' : 'peer';
+        console.log('[SYNC] Role check: my_device=' + myDeviceId + ' host_device=' + hostDeviceId + ' → isHost=' + isHost);
 
-        // Set permission for shared drive users.
-        // The drive owner always has read_write permission and can manage
-        // permissions regardless of whether they are on the Host or Peer side.
+        // 创建新 session 并设为活跃
+        var session = this.createSession(drive, role);
+        this.activeSessionId = driveId;
+
+        // 同步镜像字段（旧代码通过 this.xxx 访问）
+        this.currentDrive = drive;
+        this.isHost = isHost;
+        this._boundFolder = null;
+        this.fileCache = session.fileCache;
+        this.currentPath = '/';
+        this.peers = session.peers;
+        this._hostOnline = isHost ? true : (drive.host_online === 1 || drive.host_online === true);
+
+        // 权限设置：所有者始终 read_write
         var isOwner = this._isDriveOwner(drive);
-        if (this.isHost || isOwner) {
+        if (isHost || isOwner) {
+            session.permission = 'read_write';
             this._currentDrivePermission = 'read_write';
         } else {
-            this._currentDrivePermission = drive.permission || null;
+            session.permission = drive.permission || null;
+            this._currentDrivePermission = session.permission;
         }
-        // Show permissions tab for Host OR drive owner (even on Peer side)
         var permTab = document.getElementById('sync-tab-permissions');
         if (permTab) {
-            permTab.style.display = (this.isHost || isOwner) ? 'flex' : 'none';
+            permTab.style.display = (isHost || isOwner) ? 'flex' : 'none';
         }
 
-        this._hostOnline = this.isHost ? true : (drive.host_online === 1 || drive.host_online === true);
         if (drive.server_addr) this.serverAddr = drive.server_addr;
 
         this.hideLoading();
@@ -4291,46 +4321,59 @@ var VX_SYNC = VX_SYNC || {
         // the notification WS was connected (e.g., during reconnection).
         this.pollP2PMessages();
 
-        // Peer: if Host is offline, register with server for presence
-        // notifications (so we know when Host comes online), then show lobby.
-        // Without drive_enter, the Peer is invisible to the server's drive
-        // state and will never receive the 'presence(host, online)' push.
-        if (!this.isHost && !this._hostOnline) {
+        // Peer: Host 离线时注册 presence 并显示 lobby
+        if (!isHost && !this._hostOnline) {
             console.log('[SYNC] Host offline, registering for presence and showing lobby');
             if (this.signalingWS && this.signalingWS.readyState === WebSocket.OPEN) {
                 this.wsRequest('drive_enter', {
-                    drive_id: this.currentDrive.drive_id,
-                    device_id: this.getDeviceId(),
+                    drive_id: driveId,
+                    device_id: myDeviceId,
                     device_name: this.deviceName || ''
                 }, true);
             }
             this.showLobby();
+            this._renderSessionSwitcher();
             return;
         }
 
-        var self = this;
         // Try to restore folder binding from IndexedDB
         var folderName = await this._restoreAndBindFolder(driveId);
 
         if (this._boundFolder && this._boundFolder.handle) {
-            // Folder restored with permission → directly connect
-            console.log('[SYNC] Folder restored: ' + folderName + ', auto-connecting');
+            // Folder restored → 获取锁后连接
+            console.log('[SYNC] Folder restored: ' + folderName + ', acquiring lock and connecting');
+            session.boundFolder = this._boundFolder;
+            var locked = await this._acquireFolderLock(session);
+            if (!locked) {
+                VXUI.showMsg(this._t('sync_folder_locked_other_tab'), 'warning');
+                this._boundFolder = null;
+                session.boundFolder = null;
+                this.showLobby();
+                this._renderSessionSwitcher();
+                return;
+            }
+            this._bcast('drive_locked', {
+                drive_id: driveId,
+                role: role,
+                folder_name: session.boundFolder.name
+            });
             this._updateFolderPathDisplay();
-            if (this.isHost) {
+            if (isHost) {
                 this.startServer();
             } else {
                 this.connectToHost();
             }
         } else {
-            // No folder bound or permission needed → prompt folder picker, then connect
+            // No folder bound → 提示用户选择（selectFolder 中会获取锁）
             console.log('[SYNC] No folder binding, prompting user to select');
             this._updateFolderPathDisplay();
-            if (this.isHost) {
+            if (isHost) {
                 this.startServer();
             } else {
                 this.connectToHost();
             }
         }
+        this._renderSessionSwitcher();
     },
 
     showLobby() {
@@ -6561,6 +6604,27 @@ var VX_SYNC = VX_SYNC || {
                 name: dirHandle.name,
                 handle: dirHandle
             };
+
+            // 多 session：同步写入当前 session，并获取文件夹锁文件（物理排他）
+            var session = this._getActiveSession();
+            if (session) {
+                session.boundFolder = this._boundFolder;
+                var locked = await this._acquireFolderLock(session);
+                if (!locked) {
+                    VXUI.showMsg(this._t('sync_folder_locked_other_tab'), 'warning');
+                    this._boundFolder = null;
+                    session.boundFolder = null;
+                    this._updateFolderPathDisplay();
+                    this.showLobby();
+                    return;
+                }
+                this._bcast('drive_locked', {
+                    drive_id: session.drive_id,
+                    role: session.role,
+                    folder_name: session.boundFolder.name
+                });
+            }
+
             console.log('[SYNC] Folder bound: ' + dirHandle.name);
             this._updateFolderPathDisplay();
             this.addActivity('bind_folder', dirHandle.name);
