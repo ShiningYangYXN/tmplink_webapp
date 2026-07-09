@@ -5257,6 +5257,120 @@ var VX_SYNC = VX_SYNC || {
      * Handle incoming WSS messages (unified message dispatch).
      * All message types flow through this single handler.
      */
+
+    // 临时切换镜像到指定 session 执行 fn，完成后恢复。
+    // 用于 WSS 消息路由到非活跃 session 时（不触发 UI 渲染）。
+    _withSession(driveId, fn) {
+        var prev = this.activeSessionId;
+        if (prev !== driveId) {
+            // 静默切换镜像（不渲染 UI）
+            var session = this.sessions.get(driveId);
+            if (!session) return;
+            this.activeSessionId = driveId;
+            this.currentDrive = session.drive;
+            this.isHost = session.isHost;
+            this._boundFolder = session.boundFolder;
+            this._hostOnline = session.hostOnline;
+            this._currentDrivePermission = session.permission;
+            this.fileCache = session.fileCache;
+            this._localFiles = session.localFiles;
+            this._fileStatus = session.fileStatus;
+            this._fileProgress = session.fileProgress;
+            this.currentPath = session.currentPath;
+            this.peers = session.peers;
+            this.rtcPeerConnection = session.rtcPeerConnection;
+            this._peerConnections = session.peerConnections;
+            this._peerDeviceIds = session.peerDeviceIds;
+            this.dataChannel = session.dataChannel;
+            this.acceptDC = session.acceptDC;
+            this._hostConnectionMode = session.hostConnectionMode;
+            this._downloads = session.downloads;
+            this._pendingDownloads = session.pendingDownloads;
+            this._transferQueue = session.transferQueue;
+            this._transferBusy = session.transferBusy;
+            this._currentTransferSha1 = session.currentTransferSha1;
+            this._transferStats = session.transferStats;
+            this._peerLastPaths = session.peerLastPaths;
+            this._hostLastPaths = session.hostLastPaths;
+            this._hostPendingOps = session.hostPendingOps;
+            this._syncTimer = session.syncTimer;
+            this._syncInProgress = session.syncInProgress;
+            this._scanInProgress = session.scanInProgress;
+            this._lastScanFingerprints = session.lastScanFingerprints;
+            this._connState = session.connState;
+            this._reconnectTimer = session.reconnectTimer;
+            this._reconnectAttempt = session.reconnectAttempt;
+            this._iceTimeout = session.iceTimeout;
+            this._connectTimeout = session.connectTimeout;
+            this._offerInProgress = session.offerInProgress;
+            this._offerTimeout = session.offerTimeout;
+            this._pendingSignaling = session.pendingSignaling;
+            this._connectionMode = session.connectionMode;
+            this._relaySeq = session.relaySeq;
+            this._relayReceivedSeq = session.relayReceivedSeq;
+            this._syncStatus = session.syncStatus;
+            this._fsObserver = session.fsObserver;
+            this._activities = session.activities;
+            this._detailTab = session.detailTab;
+        }
+        try {
+            fn.call(this);
+        } finally {
+            if (prev !== driveId && prev) {
+                // 恢复之前的活跃 session 镜像（不渲染 UI）
+                var prevSession = this.sessions.get(prev);
+                if (prevSession) {
+                    this.activeSessionId = prev;
+                    this.currentDrive = prevSession.drive;
+                    this.isHost = prevSession.isHost;
+                    this._boundFolder = prevSession.boundFolder;
+                    this._hostOnline = prevSession.hostOnline;
+                    this._currentDrivePermission = prevSession.permission;
+                    this.fileCache = prevSession.fileCache;
+                    this._localFiles = prevSession.localFiles;
+                    this._fileStatus = prevSession.fileStatus;
+                    this._fileProgress = prevSession.fileProgress;
+                    this.currentPath = prevSession.currentPath;
+                    this.peers = prevSession.peers;
+                    this.rtcPeerConnection = prevSession.rtcPeerConnection;
+                    this._peerConnections = prevSession.peerConnections;
+                    this._peerDeviceIds = prevSession.peerDeviceIds;
+                    this.dataChannel = prevSession.dataChannel;
+                    this.acceptDC = prevSession.acceptDC;
+                    this._hostConnectionMode = prevSession.hostConnectionMode;
+                    this._downloads = prevSession.downloads;
+                    this._pendingDownloads = prevSession.pendingDownloads;
+                    this._transferQueue = prevSession.transferQueue;
+                    this._transferBusy = prevSession.transferBusy;
+                    this._currentTransferSha1 = prevSession.currentTransferSha1;
+                    this._transferStats = prevSession.transferStats;
+                    this._peerLastPaths = prevSession.peerLastPaths;
+                    this._hostLastPaths = prevSession.hostLastPaths;
+                    this._hostPendingOps = prevSession.hostPendingOps;
+                    this._syncTimer = prevSession.syncTimer;
+                    this._syncInProgress = prevSession.syncInProgress;
+                    this._scanInProgress = prevSession.scanInProgress;
+                    this._lastScanFingerprints = prevSession.lastScanFingerprints;
+                    this._connState = prevSession.connState;
+                    this._reconnectTimer = prevSession.reconnectTimer;
+                    this._reconnectAttempt = prevSession.reconnectAttempt;
+                    this._iceTimeout = prevSession.iceTimeout;
+                    this._connectTimeout = prevSession.connectTimeout;
+                    this._offerInProgress = prevSession.offerInProgress;
+                    this._offerTimeout = prevSession.offerTimeout;
+                    this._pendingSignaling = prevSession.pendingSignaling;
+                    this._connectionMode = prevSession.connectionMode;
+                    this._relaySeq = prevSession.relaySeq;
+                    this._relayReceivedSeq = prevSession.relayReceivedSeq;
+                    this._syncStatus = prevSession.syncStatus;
+                    this._fsObserver = prevSession.fsObserver;
+                    this._activities = prevSession.activities;
+                    this._detailTab = prevSession.detailTab;
+                }
+            }
+        }
+    },
+
     _handleWSSMessage(msg) {
         console.log('[SYNC] WSS message: type=' + msg.type + ' drive_id=' + (msg.drive_id || 'none'));
 
@@ -5272,7 +5386,10 @@ var VX_SYNC = VX_SYNC || {
                 break;
 
             case 'drive_deleted':
-                if (this.currentDrive && this.currentDrive.drive_id === msg.drive_id) {
+                if (this.sessions.has(msg.drive_id)) {
+                    // 销毁对应 session（使用 _withSession 让 leaveDrive 操作正确 session）
+                    this.leaveDrive(msg.drive_id);
+                } else if (this.currentDrive && this.currentDrive.drive_id === msg.drive_id) {
                     this._handleDriveDeleted(msg.drive_id);
                 } else {
                     console.log('[SYNC] Drive deleted remotely: ' + msg.drive_id);
@@ -5295,35 +5412,61 @@ var VX_SYNC = VX_SYNC || {
 
             // ========== Presence (peer online/offline) ==========
             case 'presence':
-                this._handlePresenceNotification(msg);
+                // 更新对应 session 的 peers（若存在）；同时更新 drives 列表
+                if (msg.drive_id && this.sessions.has(msg.drive_id)) {
+                    var self1 = this;
+                    this._withSession(msg.drive_id, function() {
+                        self1._handlePresenceNotification(msg);
+                    });
+                } else {
+                    this._handlePresenceNotification(msg);
+                }
                 break;
 
             // ========== Drive status update (host online/offline) ==========
             case 'drive_status_update':
                 this._handleDriveStatusUpdate(msg);
+                // 同步更新 session.hostOnline
+                var payload = msg.payload || msg;
+                var hostOnline = payload.host_online;
+                if (msg.drive_id && this.sessions.has(msg.drive_id)) {
+                    var session = this.sessions.get(msg.drive_id);
+                    session.hostOnline = !!hostOnline;
+                    if (this.activeSessionId === msg.drive_id) {
+                        this._hostOnline = !!hostOnline;
+                    }
+                }
                 break;
 
             // ========== Peer list ==========
             case 'peer_list':
-                this._handlePeerList(msg);
+                if (msg.drive_id && this.sessions.has(msg.drive_id)) {
+                    var self2 = this;
+                    this._withSession(msg.drive_id, function() {
+                        self2._handlePeerList(msg);
+                    });
+                } else {
+                    this._handlePeerList(msg);
+                }
                 break;
 
             // ========== Sync control messages (P2P relay) ==========
             case 'sync_control':
-                if (this.currentDrive && this.currentDrive.drive_id === msg.drive_id) {
-                    // Extract msg_type and payload from the message
-                    var payload = msg.payload;
-                    if (typeof payload === 'string') {
-                        try { payload = JSON.parse(payload); } catch(e) { return; }
-                    }
-                    // The msg_type is encoded in the payload's _msg_type field or top-level type
-                    var msgType = payload._msg_type || payload.msg_type || msg.type;
-                    var wsm = {
-                        msg_type: msgType,
-                        from_device: msg.from_device,
-                        payload: payload
-                    };
-                    this.handleP2PMessage(wsm);
+                if (msg.drive_id && this.sessions.has(msg.drive_id)) {
+                    var self3 = this;
+                    this._withSession(msg.drive_id, function() {
+                        var payload = msg.payload;
+                        if (typeof payload === 'string') {
+                            try { payload = JSON.parse(payload); } catch(e) { return; }
+                        }
+                        var msgType = payload._msg_type || payload.msg_type || msg.type;
+                        var wsm = {
+                            msg_type: msgType,
+                            from_device: msg.from_device,
+                            payload: payload
+                        };
+                        self3.handleP2PMessage(wsm);
+                    });
                 }
                 break;
 
@@ -5331,12 +5474,22 @@ var VX_SYNC = VX_SYNC || {
             case 'webrtc_offer':
             case 'webrtc_answer':
             case 'ice_candidate':
-                this.handleSignalingMessage(msg);
+                if (msg.drive_id && this.sessions.has(msg.drive_id)) {
+                    var self4 = this;
+                    this._withSession(msg.drive_id, function() {
+                        self4.handleSignalingMessage(msg);
+                    });
+                }
                 break;
 
             // ========== WebRTC renegotiation (Host-side) ==========
             case 'webrtc_renegotiate':
-                this._handleWebRTCRenegotiate(msg);
+                if (msg.drive_id && this.sessions.has(msg.drive_id)) {
+                    var self5 = this;
+                    this._withSession(msg.drive_id, function() {
+                        self5._handleWebRTCRenegotiate(msg);
+                    });
+                }
                 break;
 
             // ========== Response types (for request/response matching) ==========
@@ -5679,40 +5832,82 @@ var VX_SYNC = VX_SYNC || {
         this._cleanupSessionConnection(this._getActiveSession());
     },
 
-    leaveDrive() {
+    leaveDrive(driveId) {
+        driveId = driveId || (this.currentDrive ? this.currentDrive.drive_id : null);
+        if (!driveId) {
+            console.warn('[SYNC] leaveDrive: no drive to leave');
+            return;
+        }
         this.trackUI('sync_leave_drive');
-        console.log('[SYNC] Leaving drive: ' + (this.currentDrive ? this.currentDrive.drive_id : 'none'));
-        // Persist sync state so next session resumes correctly
-        this._saveSyncState();
-        this._cleanupConnection();
+        console.log('[SYNC] Leaving drive: ' + driveId);
 
-        if (this.currentDrive && this.currentDrive.drive_id) {
-            this._removeStoredFolderHandle(this.currentDrive.drive_id);
+        var session = this.sessions.get(driveId);
+        var wasActive = (this.activeSessionId === driveId);
+
+        // 切换镜像到该 session 以保存状态（_saveSyncState 操作 this.xxx 镜像）
+        if (session && !wasActive) {
+            this.switchSession(driveId);
         }
 
-        this.currentDrive = null;
-        this.isHost = false;
-        this._hostOnline = true;
-        this.fileCache.clear();
-        this._localFiles = [];
-        this._fileStatus.clear();
-        this._fileProgress.clear();
-        this._currentTransferSha1 = null;
-        this._downloads.clear();
-        this.peers = [];
-        this._boundFolder = null;
-        this._connectionMode = 'wss_relay';
-        this._transferStats = {
-            filesUploaded: 0,
-            filesDownloaded: 0,
-            bytesUploaded: 0,
-            bytesDownloaded: 0
-        };
+        // Persist sync state so next session resumes correctly
+        if (session) {
+            this._saveSyncState();
+            this._cleanupSessionConnection(session);
+        }
 
-        this._hideMobileTopbar();
-        document.getElementById('sync-drive-list').style.display = '';
-        document.getElementById('sync-drive-detail').style.display = 'none';
-        document.getElementById('sync-drive-lobby').style.display = 'none';
+        if (driveId) {
+            this._removeStoredFolderHandle(driveId);
+        }
+
+        // 释放文件夹锁文件（异步，不阻塞）
+        if (session) {
+            var self = this;
+            this._releaseFolderLock(session).then(function() {});
+        }
+        this._bcast('drive_unlocked', { drive_id: driveId });
+
+        // 从 sessions Map 移除
+        this.sessions.delete(driveId);
+
+        // 切换到下一个 session 或返回列表
+        if (wasActive || this.activeSessionId === driveId) {
+            this.activeSessionId = null;
+            if (this.sessions.size > 0) {
+                this.switchSession(this.sessions.keys().next().value);
+            } else {
+                // 清空镜像字段
+                this.currentDrive = null;
+                this.isHost = false;
+                this._hostOnline = true;
+                this.fileCache.clear();
+                this._localFiles = [];
+                this._fileStatus.clear();
+                this._fileProgress.clear();
+                this._currentTransferSha1 = null;
+                this._downloads.clear();
+                this.peers = [];
+                this._boundFolder = null;
+                this._connectionMode = 'wss_relay';
+                this._transferStats = {
+                    filesUploaded: 0,
+                    filesDownloaded: 0,
+                    bytesUploaded: 0,
+                    bytesDownloaded: 0
+                };
+
+                this._hideMobileTopbar();
+                this._renderSessionSwitcher();
+                var list = document.getElementById('sync-drive-list');
+                var detail = document.getElementById('sync-drive-detail');
+                var lobby = document.getElementById('sync-drive-lobby');
+                if (list) list.style.display = '';
+                if (detail) detail.style.display = 'none';
+                if (lobby) lobby.style.display = 'none';
+            }
+        } else {
+            // 非活跃 session 被销毁，仅刷新切换器
+            this._renderSessionSwitcher();
+        }
     },
 
     // ========== Delete / Leave Drive ==========
