@@ -1369,6 +1369,8 @@
     "sync_link_copied": "同步盘链接已复制",
     "sync_folder_bound": "已绑定文件夹：{name}",
     "sync_select_folder_failed": "选择文件夹失败",
+    "sync_folder_locked_other_tab": "该文件夹已被另一个同步盘占用",
+    "sync_leave_warning": "当前有同步盘正在运行，离开页面将中断连接。确定离开吗？",
     "sync_change_folder": "更换",
     "sync_device_name_empty": "设备名称不能为空",
     "sync_device_name_set": "设备名称已设置为：{name}",

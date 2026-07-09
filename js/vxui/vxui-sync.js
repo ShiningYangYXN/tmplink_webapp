@@ -413,6 +413,21 @@ var VX_SYNC = VX_SYNC || {
         this._lockFileHeartbeatTimer = setInterval(function() {
             self2._heartbeatLockFiles();
         }, 1000);
+
+        // 页面卸载拦截：有活跃 session 时提示用户
+        var selfUnload = this;
+        window.addEventListener('beforeunload', function(e) {
+            if (selfUnload.sessions.size > 0) {
+                e.preventDefault();
+                e.returnValue = selfUnload._t('sync_leave_warning');
+                return e.returnValue;
+            }
+        });
+
+        // pagehide: best-effort 释放（锁文件依赖 3s 过期回收）
+        window.addEventListener('pagehide', function() {
+            selfUnload._releaseAllLocksOnUnload();
+        });
     },
 
     // Check whether the user has accepted the sync beta consent.
@@ -475,6 +490,24 @@ var VX_SYNC = VX_SYNC || {
         this.sessions.forEach(function(session) {
             self._touchDriveLockFile(session);
         });
+    },
+
+    // 页面卸载时的 best-effort 释放（锁文件依赖 3s 过期回收）
+    _releaseAllLocksOnUnload() {
+        if (this.sessions.size === 0) return;
+        // 1. 广播给其它 tab
+        this._bcast('tab_unloading', { tab_id: this._tabID });
+        // 2. best-effort WSS drive_leave for each session
+        if (this.signalingWS && this.signalingWS.readyState === WebSocket.OPEN) {
+            var self = this;
+            this.sessions.forEach(function(session) {
+                try {
+                    self.wsRequest('drive_leave', { drive_id: session.drive_id }, true);
+                } catch (e) {}
+            });
+        }
+        // 3. 锁文件无法在 pagehide 中可靠删除（File System Access API 是异步的），
+        //    依赖 3s heartbeat 过期机制快速回收。
     },
 
     // User accepted the consent — persist and finish initializing the module.

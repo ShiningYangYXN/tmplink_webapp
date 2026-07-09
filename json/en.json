@@ -1372,6 +1372,8 @@
     "sync_link_copied": "Sync drive link copied",
     "sync_folder_bound": "Folder bound: {name}",
     "sync_select_folder_failed": "Failed to select folder",
+    "sync_folder_locked_other_tab": "This folder is already bound to another sync drive",
+    "sync_leave_warning": "Sync drives are running. Leaving this page will disconnect them. Are you sure?",
     "sync_change_folder": "Change",
     "sync_device_name_empty": "Device name cannot be empty",
     "sync_device_name_set": "Device name set to: {name}",
