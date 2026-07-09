@@ -3067,6 +3067,9 @@ var VX_SYNC = VX_SYNC || {
             // Peer: update loading progress — DataChannel is open, now waiting for file list
             if (!this.isHost) {
                 this.updateLoadingProgress('正在同步文件列表...', '直连通道已建立', 60);
+                // 全局 toast：Peer 连接成功（覆盖重连场景，初次连接也提示）
+                var driveName = (this.currentDrive && (this.currentDrive.name || this.currentDrive.drive_name)) || '';
+                VX_SYNC.toastSuccess(VX_SYNC._t('sync_toast_connected_to_host').replace('{name}', driveName));
             }
 
             // Start DataChannel keepalive to prevent TURN TCP idle timeout.
@@ -4774,6 +4777,7 @@ var VX_SYNC = VX_SYNC || {
                         }
                     }
                     this.addActivity('host_online', displayName + ' 已上线');
+                    this.toastSuccess(this._t('sync_toast_host_online').replace('{name}', displayName));
                 }
                 // If Host went offline and we're a Peer, immediately enter the
                 // waiting-for-host state. The notification WS push delivers this
@@ -4808,6 +4812,7 @@ var VX_SYNC = VX_SYNC || {
                     }
                     this._reconnectAttempt = 0;
                     this.addActivity('host_offline', displayName + ' 已离线');
+                    this.toastWarning(this._t('sync_toast_host_offline').replace('{name}', displayName));
                 }
             } else {
                 // Peer online/offline — update node count display
@@ -4837,6 +4842,7 @@ var VX_SYNC = VX_SYNC || {
                 }
                 if (isOnline) {
                     this.addActivity('peer_join', displayName + ' 已加入');
+                    this.toastInfo(this._t('sync_toast_peer_join').replace('{name}', displayName));
                     // Host: create SDP offer for the newly online Peer.
                     if (this.isHost && msg.device_id) {
                         console.log('[SYNC] Host detected peer online via presence: ' + msg.device_id);
@@ -4844,6 +4850,7 @@ var VX_SYNC = VX_SYNC || {
                     }
                 } else {
                     this.addActivity('peer_leave', displayName + ' 已离开');
+                    this.toastInfo(this._t('sync_toast_peer_leave').replace('{name}', displayName));
                     // Host: close the per-peer connection for this Peer
                     if (this.isHost && msg.device_id) {
                         console.log('[SYNC] Host closing connection for offline peer: ' + msg.device_id);
@@ -8467,6 +8474,12 @@ var VX_SYNC = VX_SYNC || {
     toastWarning(msg) {
         if (typeof VXUI !== 'undefined' && VXUI && typeof VXUI.toastWarning === 'function') {
             VXUI.toastWarning(msg);
+        }
+    },
+
+    toastInfo(msg) {
+        if (typeof VXUI !== 'undefined' && VXUI && typeof VXUI.toastInfo === 'function') {
+            VXUI.toastInfo(msg);
         }
     },
 
