@@ -48,7 +48,13 @@ var VX_SYNC = VX_SYNC || {
     _stunServersCache: null,  // {iceServers, expires} cached STUN server list
     _eligiblePeers: [],      // UIDs of eligible peers (latency < 100ms)
     _syncStatus: 'idle',     // 'idle' | 'ready' | 'syncing' | 'offline'
-    _detailTab: 'files',     // 'files' | 'peers' | 'activity' - active tab in detail view
+    _detailTab: 'files',     // 'files' | 'permissions' | 'peers' | 'activity' - active tab in detail view
+    _mainTab: 'drives',       // 'drives' | 'messages' - active main tab
+    _inviteCodes: [],         // Current invite codes for the drive
+    _joinRequests: [],        // Current join requests for the drive
+    _notifications: [],       // User's notifications
+    _unreadNotificationCount: 0, // Count of unread notifications
+    _currentDrivePermission: null, // 'read' or 'read_write' for shared drive users
     _ctxTarget: null,        // {sha1, name} for context menu target
     _hostOnline: true,       // Whether the drive host is online
     _boundFolder: null,      // {name, handle} for bound folder
@@ -87,6 +93,7 @@ var VX_SYNC = VX_SYNC || {
     _drivesLoaded: false,    // Whether drive list has been loaded from server
     _peerLastPaths: null,    // Set of file paths Peer had last sync (null = first sync)
     _hostLastPaths: null,    // Set of file paths Host had last sync (null = first sync)
+    _hostPendingOps: null,   // Pending Host operations: { path: { op: 'delete'|'rename'|'move', ts, newPath? } }
     _transferSpeed: 0,       // Current transfer speed in bytes/sec
     _transferStartTime: 0,   // Timestamp when current transfer started
     _transferLastBytes: 0,   // Bytes received/sent at last speed check
@@ -604,8 +611,27 @@ var VX_SYNC = VX_SYNC || {
         
         if (!hasError) {
             console.log('[SYNC] WS response: request_id=' + requestId);
-        } else if (!pending.silent) {
-            this.toastError(data.error || this._t('sync_request_failed'));
+        } else {
+            if (!pending.silent) {
+                this.toastError(data.error || this._t('sync_request_failed'));
+            }
+            // Special handling: if drive_enter returns no_permission, cleanup and return to drive list
+            if (data.error === 'no_permission' && this.currentDrive) {
+                console.warn('[SYNC] Permission denied for drive, cleaning up and returning to list');
+                this.hideLoading();
+                this._cleanupConnection();
+                this._boundFolder = null;
+                this.isHost = false;
+                this.currentDrive = null;
+                // Show drive list and hide detail/lobby
+                document.getElementById('sync-drive-list').style.display = '';
+                document.getElementById('sync-drive-detail').style.display = 'none';
+                document.getElementById('sync-drive-lobby').style.display = 'none';
+                // Reload drives to remove the expired/unauthorized one
+                this.loadDrives();
+                // Show friendly message
+                this.toastError(this._t('sync_no_permission_error'));
+            }
         }
         
         pending.resolve(response);
@@ -919,6 +945,7 @@ var VX_SYNC = VX_SYNC || {
             this.drives = [];
         }
         this.renderDriveList();
+        this.loadUnreadCount();
     },
     
     async createDrive(name) {
@@ -1212,6 +1239,10 @@ var VX_SYNC = VX_SYNC || {
                 for (var di = 0; di < oldCache.length; di++) {
                     if (!newPaths[oldCache[di].sha1]) {
                         self.addActivity('delete', oldCache[di].name + ' (\u672c\u673a)');
+                        // Track as pending Host deletion to prevent race condition
+                        var delPath = (oldCache[di].parent_path === '/' ? '' : oldCache[di].parent_path) + '/' + oldCache[di].name;
+                        if (!self._hostPendingOps) self._hostPendingOps = {};
+                        self._hostPendingOps[delPath] = { op: 'delete', ts: Date.now() };
                     }
                 }
                 // Update Host's own file cache and UI
@@ -1491,6 +1522,12 @@ var VX_SYNC = VX_SYNC || {
             var r = records[i];
             var path = r.relativePathComponents || [];
             if (path.length > 0 && path[0] === '.tmpsync') continue;
+            // Skip ignored entries (system files, temp files, macOS metadata, etc.)
+            var skip = false;
+            for (var pi = 0; pi < path.length; pi++) {
+                if (this._isIgnoredEntry(path[pi], false)) { skip = true; break; }
+            }
+            if (skip) continue;
             hasExternalChange = true;
             break;
         }
@@ -1622,11 +1659,17 @@ var VX_SYNC = VX_SYNC || {
                         download.push(hf);
                     }
                 } else if (!hf && pf) {
-                    // File is on Peer but not on Host
-                    if (hostHadPath[filePath]) {
-                        // Host had this file before but not now → Host deleted it
-                        // Peer should also delete (propagate deletion)
+                    // File is on Peer but not on Host.
+                    // Check Host's pending operations first — if Host deleted/renamed/moved
+                    // this file, the operation takes precedence over Peer's state.
+                    var pendingOp = self._hostPendingOps && self._hostPendingOps[filePath];
+                    if (hostHadPath[filePath] || (pendingOp && pendingOp.op === 'delete')) {
+                        // Host had/deleted this file → Peer should also delete
                         deleteOnPeer.push({ path: filePath, name: pf.name, parent_path: pf.parent_path, sha1: pf.sha1 });
+                    } else if (pendingOp && (pendingOp.op === 'rename' || pendingOp.op === 'move')) {
+                        // Host renamed/moved this file → Peer will get the update via sync_delta,
+                        // don't treat the old path as a new file to upload
+                        console.log('[SYNC] Skipping pending ' + pendingOp.op + ' path: ' + filePath);
                     } else {
                         // Host never had this file → new file, Peer should upload
                         upload.push(pf);
@@ -1662,6 +1705,27 @@ var VX_SYNC = VX_SYNC || {
             var peerCurrentPaths = {};
             for (var p in peerMap) peerCurrentPaths[p] = true;
             this._peerLastPaths = peerCurrentPaths;
+
+            // Track Host-initiated deletions as pending — prevents race condition
+            // where Peer reports the file still exists before completing the delete.
+            if (!this._hostPendingOps) this._hostPendingOps = {};
+            for (var di = 0; di < deleteOnPeer.length; di++) {
+                var dp = deleteOnPeer[di];
+                this._hostPendingOps[dp.path] = { op: 'delete', ts: Date.now() };
+            }
+
+            // Clean up resolved pending ops: paths no longer on either side
+            for (var opPath in this._hostPendingOps) {
+                var op = this._hostPendingOps[opPath];
+                if (op.op === 'delete' && !peerMap[opPath] && !hostMap[opPath]) {
+                    console.log('[SYNC] Host pending delete resolved: ' + opPath);
+                    delete this._hostPendingOps[opPath];
+                }
+                if ((op.op === 'rename' || op.op === 'move') && !peerMap[opPath]) {
+                    console.log('[SYNC] Host pending ' + op.op + ' resolved: ' + opPath);
+                    delete this._hostPendingOps[opPath];
+                }
+            }
 
             // Execute Host-side deletions
             var peerSource = this._getDeviceDisplayName(fromDevice) || '';
@@ -2764,6 +2828,11 @@ var VX_SYNC = VX_SYNC || {
     },
     
     async uploadFile(file) {
+        if (!this._currentUserHasWritePermission()) {
+            console.warn('[SYNC] uploadFile blocked: read-only permission');
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         console.log('[SYNC] Uploading file: ' + file.name + ' size=' + file.size);
         const sha1 = await this.calculateSHA1(file);
         const metadata = {
@@ -2858,6 +2927,10 @@ var VX_SYNC = VX_SYNC || {
     // Peer: upload a file from local folder to Host (bidirectional sync)
     async uploadFileToHost(sha1, meta) {
         if (this.isHost) return;
+        if (!this._currentUserHasWritePermission()) {
+            console.warn('[SYNC] uploadFileToHost blocked: read-only permission');
+            return;
+        }
         if (!this._boundFolder || !this._boundFolder.handle) {
             console.warn('[SYNC] uploadFileToHost: no bound folder');
             return;
@@ -3033,11 +3106,16 @@ var VX_SYNC = VX_SYNC || {
             }
 
             // Upload: Peer should send these files to Host
-            (delta.upload || []).forEach(function(item) {
-                var sha1 = item.sha1;
-                console.log('[SYNC] Need to upload to Host:', sha1);
-                self._enqueueUpload({ sha1: sha1, meta: item });
-            });
+            // Skip uploads for read-only peers — they cannot write to the host
+            if (self._currentUserHasWritePermission()) {
+                (delta.upload || []).forEach(function(item) {
+                    var sha1 = item.sha1;
+                    console.log('[SYNC] Need to upload to Host:', sha1);
+                    self._enqueueUpload({ sha1: sha1, meta: item });
+                });
+            } else if ((delta.upload || []).length > 0) {
+                console.warn('[SYNC] Skipping ' + delta.upload.length + ' upload(s) — read-only permission');
+            }
 
             // Delete: Peer should delete these files (Host deleted them)
             (delta.delete_on_peer || []).forEach(function(item) {
@@ -3210,6 +3288,10 @@ var VX_SYNC = VX_SYNC || {
                     '<span class="' + statusTagCls + '"><span class="' + dotCls + '"></span>' + statusLabel + '</span>';
             }
 
+            // Check if this is a shared drive (user is not the owner)
+            var isShared = !isHost && drive.host_uid !== VX_UID;
+            var sharedTagHtml = isShared ? '<span class="vx-sync-drive-tag-shared">' + this._t('sync_shared') + '</span>' : '';
+
             return '<div class="vx-sync-drive-card" onclick="VX_SYNC.enterDrive(\'' + drive.drive_id + '\')">' +
                 '<button class="vx-sync-drive-delete-btn" onclick="VX_SYNC.promptDeleteDrive(\'' + drive.drive_id + '\', event)" title="' + deleteLabel + '">' +
                     '<iconpark-icon name="trash"></iconpark-icon>' +
@@ -3219,7 +3301,7 @@ var VX_SYNC = VX_SYNC || {
                         '<iconpark-icon name="network-drive" size="28"></iconpark-icon>' +
                     '</div>' +
                     '<div class="vx-sync-drive-head-text">' +
-                        '<h3>' + this.escapeHtml(drive.name || this._t('sync_drive_unnamed')) + '</h3>' +
+                        '<h3>' + this.escapeHtml(drive.name || this._t('sync_drive_unnamed')) + ' ' + sharedTagHtml + '</h3>' +
                         '<div class="vx-sync-drive-meta">' +
                             '<span>' + (drive.peer_count || 0) + '/' + (drive.peer_limit || 10) + ' ' + this._t('sync_lobby_nodes') + '</span>' +
                             '<span class="vx-sync-drive-meta-sep">·</span>' +
@@ -3556,7 +3638,61 @@ var VX_SYNC = VX_SYNC || {
         this.hideCreateDrive();
         await this.createDrive(name);
     },
-    
+
+    // ========== Join Drive with Invite Code ==========
+
+    showJoinDrive() {
+        this.trackUI('sync_show_join');
+        document.getElementById('sync-join-modal').style.display = 'block';
+        document.getElementById('sync-join-invite-code').value = '';
+    },
+
+    hideJoinDrive() {
+        document.getElementById('sync-join-modal').style.display = 'none';
+    },
+
+    async doJoinDrive() {
+        const inviteCode = document.getElementById('sync-join-invite-code').value.trim();
+        if (!inviteCode) {
+            VXUI.showMsg('请输入邀请码', 'error');
+            return;
+        }
+
+        try {
+            const resp = await this.wsRequest('join_request_apply', {
+                invite_code: inviteCode,
+                applicant_name: this.deviceName || this.deviceID,
+            });
+            if (resp.error) {
+                VXUI.showMsg(resp.error, 'error');
+                return;
+            }
+            VXUI.showMsg(this._t('sync_join_request_submitted'), 'success');
+            this.hideJoinDrive();
+            this.loadDrives();
+        } catch (e) {
+            console.error('join request failed', e);
+            VXUI.showMsg('请求失败，请重试', 'error');
+        }
+    },
+
+    // ========== Main Tab Switching ==========
+
+    switchMainTab(tab) {
+        this._mainTab = tab;
+        this.trackUI('sync_main_tab_' + tab);
+
+        document.querySelectorAll('.vx-sync-main-tab').forEach(function(btn) {
+            btn.classList.toggle('active', btn.dataset.tab === tab);
+        });
+        document.getElementById('sync-main-view-drives').style.display = tab === 'drives' ? 'block' : 'none';
+        document.getElementById('sync-main-view-messages').style.display = tab === 'messages' ? 'block' : 'none';
+
+        if (tab === 'messages') {
+            this.loadNotifications();
+        }
+    },
+
     _showMobileTopbar() {
         var topbar = document.getElementById('sync-mob-topbar');
         if (topbar) topbar.style.display = '';
@@ -3600,6 +3736,14 @@ var VX_SYNC = VX_SYNC || {
         var hostDeviceId = drive.host_device_id || '';
         this.isHost = (hostDeviceId !== '' && hostDeviceId === myDeviceId);
         console.log('[SYNC] Role check: my_device=' + myDeviceId + ' host_device=' + hostDeviceId + ' → isHost=' + this.isHost);
+
+        // Set permission for shared drive users
+        this._currentDrivePermission = this.isHost ? 'read_write' : (drive.permission || null);
+        // Hide/show permissions tab based on ownership
+        var permTab = document.getElementById('sync-tab-permissions');
+        if (permTab) {
+            permTab.style.display = this.isHost ? 'flex' : 'none';
+        }
 
         this._hostOnline = this.isHost ? true : (drive.host_online === 1 || drive.host_online === true);
         if (drive.server_addr) this.serverAddr = drive.server_addr;
@@ -3858,11 +4002,16 @@ var VX_SYNC = VX_SYNC || {
             t.classList.toggle('active', t.getAttribute('data-tab') === tab);
         });
         // Show only the active list view
-        var views = ['files', 'peers', 'activity'];
+        var views = ['files', 'permissions', 'peers', 'activity'];
         views.forEach(function(v) {
             var el = document.getElementById('sync-view-' + v);
             if (el) el.style.display = (v === tab) ? '' : 'none';
         });
+        // Load permissions data when entering permissions tab
+        if (tab === 'permissions') {
+            this.loadInviteCodes();
+            this.loadJoinRequests();
+        }
     },
 
     // Update role badges (no longer shown in UI, kept for compatibility)
@@ -4113,6 +4262,7 @@ var VX_SYNC = VX_SYNC || {
         this._syncInProgress = false;
         this._peerLastPaths = null;
         this._hostLastPaths = null;
+        this._hostPendingOps = null;
         this._transferStats = {
             filesUploaded: 0,
             filesDownloaded: 0,
@@ -4549,6 +4699,10 @@ var VX_SYNC = VX_SYNC || {
                     this.drives = this.drives.filter(function(d) { return d.drive_id !== msg.drive_id; });
                     this.renderDriveList();
                 }
+                break;
+
+            case 'new_notification':
+                this.loadUnreadCount();
                 break;
 
             // ========== Presence (peer online/offline) ==========
@@ -4999,6 +5153,10 @@ var VX_SYNC = VX_SYNC || {
 
     uploadFiles() {
         if (!this._isHostAlive()) return;
+        if (!this._currentUserHasWritePermission()) {
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         this.trackUI('sync_upload_files');
         const input = document.getElementById('sync-file-input');
         if (input) input.click();
@@ -5006,6 +5164,10 @@ var VX_SYNC = VX_SYNC || {
     
     handleFileSelect(event) {
         if (!this._isHostAlive()) return;
+        if (!this._currentUserHasWritePermission()) {
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         this.trackUI('sync_file_select');
         const files = event.target.files;
         if (!files || files.length === 0) return;
@@ -5338,6 +5500,10 @@ var VX_SYNC = VX_SYNC || {
     
     async deleteFile(sha1) {
         if (!this._isHostAlive()) return;
+        if (!this._currentUserHasWritePermission()) {
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         this.trackUI('sync_delete_file');
         var self = this;
         var file = this.fileCache.get(sha1);
@@ -5363,6 +5529,10 @@ var VX_SYNC = VX_SYNC || {
     
     async createFolder(name) {
         if (!this._isHostAlive()) return;
+        if (!this._currentUserHasWritePermission()) {
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         this.trackUI('sync_create_folder');
         var self = this;
         var parentPath = this.currentPath;
@@ -5391,6 +5561,10 @@ var VX_SYNC = VX_SYNC || {
     
     async renameFile(sha1, newName) {
         if (!this._isHostAlive()) return;
+        if (!this._currentUserHasWritePermission()) {
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         this.trackUI('sync_rename_file');
         var self = this;
         var file = this.fileCache.get(sha1);
@@ -5431,11 +5605,22 @@ var VX_SYNC = VX_SYNC || {
 
         this.addActivity('rename', oldName + ' \u2192 ' + newName + ' (\u672c\u673a)');
         this.renderFileList(Array.from(this.fileCache.values()));
+
+        // Track old path as pending rename — prevents race condition where Peer
+        // reports the old path before receiving the file_op rename command
+        if (!this._hostPendingOps) this._hostPendingOps = {};
+        var newPath = (file.parent_path === '/' ? '' : file.parent_path) + '/' + newName;
+        this._hostPendingOps[oldPath] = { op: 'rename', newPath: newPath, ts: Date.now() };
+
         this._triggerImmediateSync('rename');
     },
 
     async moveFile(sha1, newParentPath) {
         if (!this._isHostAlive()) return;
+        if (!this._currentUserHasWritePermission()) {
+            VXUI.showMsg(this._t('read_only_permission_denied'), 'error');
+            return;
+        }
         this.trackUI('sync_move_file');
         var self = this;
         var file = this.fileCache.get(sha1);
@@ -5475,6 +5660,13 @@ var VX_SYNC = VX_SYNC || {
 
         this.addActivity('move', file.name + ' \u2192 ' + newParentPath + ' (\u672c\u673a)');
         this.renderFileList(Array.from(this.fileCache.values()));
+
+        // Track old path as pending move — prevents race condition where Peer
+        // reports the old path before receiving the file_op move command
+        if (!this._hostPendingOps) this._hostPendingOps = {};
+        var movedNewPath = (newParentPath === '/' ? '' : newParentPath) + '/' + file.name;
+        this._hostPendingOps[oldPath] = { op: 'move', newPath: movedNewPath, ts: Date.now() };
+
         this._triggerImmediateSync('move');
     },
     
@@ -5993,6 +6185,7 @@ var VX_SYNC = VX_SYNC || {
         var items = [];
         for await (var [name, handle] of dirHandle.entries()) {
             if (name === '.tmpsync') continue;
+            if (this._isIgnoredEntry(name, handle.kind === 'directory')) continue;
             if (handle.kind === 'file') {
                 var file = await handle.getFile();
                 var sha1 = await this._fingerprintFile(name, path, file.size, new Date(file.lastModified).toISOString());
@@ -6233,7 +6426,7 @@ var VX_SYNC = VX_SYNC || {
             if (!tmpDir) return;
 
             var state = {
-                version: 1,
+                version: 2,
                 device_id: this.deviceId || '',
                 is_host: this.isHost,
                 drive_id: this.currentDrive ? this.currentDrive.drive_id : null,
@@ -6241,7 +6434,8 @@ var VX_SYNC = VX_SYNC || {
                 last_sync_paths: {
                     local: this.isHost ? this._hostLastPaths : this._peerLastPaths,
                     remote: this.isHost ? this._peerLastPaths : null
-                }
+                },
+                host_pending_ops: this.isHost ? (this._hostPendingOps || null) : null
             };
 
             var fileHandle = await tmpDir.getFileHandle('state.json', { create: true });
@@ -6273,8 +6467,8 @@ var VX_SYNC = VX_SYNC || {
             var text = await file.text();
             var state = JSON.parse(text);
 
-            if (state.version !== 1) {
-                console.log('[SYNC] State version mismatch, ignoring stored state');
+            if (state.version !== 1 && state.version !== 2) {
+                console.log('[SYNC] State version mismatch (v' + state.version + '), ignoring stored state');
                 return;
             }
 
@@ -6282,6 +6476,8 @@ var VX_SYNC = VX_SYNC || {
             if (this.isHost) {
                 this._hostLastPaths = state.last_sync_paths.local || null;
                 this._peerLastPaths = state.last_sync_paths.remote || null;
+                // Restore pending Host operations (v2+)
+                this._hostPendingOps = state.host_pending_ops || null;
             } else {
                 this._peerLastPaths = state.last_sync_paths.local || null;
             }
@@ -6312,6 +6508,7 @@ var VX_SYNC = VX_SYNC || {
         var files = [];
         for await (var [name, handle] of dirHandle.entries()) {
             if (name === '.tmpsync') continue;
+            if (this._isIgnoredEntry(name, handle.kind === 'directory')) continue;
             if (handle.kind === 'file') {
                 var file = await handle.getFile();
                 files.push({
@@ -6342,6 +6539,25 @@ var VX_SYNC = VX_SYNC || {
     },
 
     // ========== Folder Scanning & Indexing ==========
+
+    // Check if a file or directory should be excluded from sync.
+    // Files: .DS_Store (macOS Finder metadata), ._* (AppleDouble resource fork),
+    //   .crswap / .crdownload (Chrome temp downloads), .tmp (generic temp files),
+    //   Thumbs.db (Windows thumbnail cache), .localized (macOS folder localization)
+    // Directories: .Spotlight-V100, .Trashes, .fseventsd, .TemporaryItems
+    _isIgnoredEntry(name, isDir) {
+        if (!name) return false;
+        if (isDir) {
+            return name === '.Spotlight-V100' || name === '.Trashes' ||
+                   name === '.fseventsd' || name === '.TemporaryItems';
+        }
+        // Files: system metadata + temp files
+        if (name === '.DS_Store' || name === '.localized' || name === 'Thumbs.db') return true;
+        if (name.startsWith('._')) return true;
+        var lower = name.toLowerCase();
+        return lower.endsWith('.crswap') || lower.endsWith('.crdownload') || lower.endsWith('.tmp');
+    },
+
     async _fingerprintFile(name, parentPath, size, mtime) {
         // Use path+name+size as fingerprint (NOT mtime).
         // mtime differs between Host and Peer after sync (write time != original time),
@@ -7099,5 +7315,384 @@ var VX_SYNC = VX_SYNC || {
         if (typeof VXUI !== 'undefined' && VXUI && typeof VXUI.toastWarning === 'function') {
             VXUI.toastWarning(msg);
         }
-    }
+    },
+
+    // ========== Invite Code Operations ==========
+
+    showGenerateInviteCode() {
+        this.trackUI('sync_show_generate_invite');
+        document.getElementById('sync-generate-invite-modal').style.display = 'block';
+        // Bind custom input visibility
+        var self = this;
+        ['invite_expires', 'max_uses', 'perm_expires'].forEach(function(name) {
+            document.querySelectorAll('input[name="' + name + '"]').forEach(function(radio) {
+                radio.onchange = function() {
+                    var customId = '';
+                    if (name === 'invite_expires') customId = 'invite-expires-custom';
+                    else if (name === 'max_uses') customId = 'max-uses-custom';
+                    else customId = 'perm-expires-custom';
+                    var customInput = document.getElementById(customId);
+                    if (customInput) {
+                        customInput.style.display = this.value === 'custom' ? 'block' : 'none';
+                    }
+                };
+            });
+        });
+    },
+
+    hideGenerateInviteCode() {
+        document.getElementById('sync-generate-invite-modal').style.display = 'none';
+    },
+
+    async doGenerateInviteCode() {
+        var getSelectedValue = function(name) {
+            var checked = document.querySelector('input[name="' + name + '"]:checked');
+            if (!checked) return 0;
+            return parseInt(checked.value) || 0;
+        };
+
+        // Handle custom values
+        var expiresDays = getSelectedValue('invite_expires');
+        if (document.querySelector('input[name="invite_expires"]:checked') &&
+            document.querySelector('input[name="invite_expires"]:checked').value === 'custom') {
+            var custom = parseInt(document.getElementById('invite-expires-custom').value);
+            expiresDays = isNaN(custom) ? 0 : custom;
+        }
+
+        var maxUses = getSelectedValue('max_uses');
+        if (document.querySelector('input[name="max_uses"]:checked') &&
+            document.querySelector('input[name="max_uses"]:checked').value === 'custom') {
+            var custom = parseInt(document.getElementById('max-uses-custom').value);
+            maxUses = isNaN(custom) ? 0 : custom;
+        }
+
+        var permExpiresDays = getSelectedValue('perm_expires');
+        if (document.querySelector('input[name="perm_expires"]:checked') &&
+            document.querySelector('input[name="perm_expires"]:checked').value === 'custom') {
+            var custom = parseInt(document.getElementById('perm-expires-custom').value);
+            permExpiresDays = isNaN(custom) ? 0 : custom;
+        }
+
+        var permissionEl = document.querySelector('input[name="permission"]:checked');
+        var permission = permissionEl ? permissionEl.value : 'read';
+
+        try {
+            var resp = await this.wsRequest('invite_code_create_req', {
+                drive_id: this.currentDrive.drive_id,
+                permission: permission,
+                expires_days: expiresDays,
+                max_uses: maxUses,
+                permission_expires_days: permExpiresDays,
+            });
+            if (resp.error) {
+                VXUI.showMsg(resp.error, 'error');
+                return;
+            }
+            VXUI.showMsg(this._t('sync_invite_created'), 'success');
+            this.hideGenerateInviteCode();
+            this.loadInviteCodes();
+        } catch (e) {
+            console.error('generate invite code failed', e);
+            VXUI.showMsg('生成失败，请重试', 'error');
+        }
+    },
+
+    async loadInviteCodes() {
+        if (!this.currentDrive || !this.isHost) return;
+
+        try {
+            var resp = await this.wsRequest('invite_code_list_req', {
+                drive_id: this.currentDrive.drive_id,
+            });
+            if (resp.error) {
+                console.error('load invite codes failed', resp.error);
+                return;
+            }
+            this._inviteCodes = resp.codes || [];
+            this.renderInviteCodeList();
+        } catch (e) {
+            console.error('loadInviteCodes error', e);
+        }
+    },
+
+    renderInviteCodeList() {
+        var container = document.getElementById('sync-invite-code-list');
+        if (!this._inviteCodes || this._inviteCodes.length === 0) {
+            container.innerHTML = '<tr class="vx-sync-empty-row"><td colspan="6" data-tpl="sync_no_invite_codes">暂无邀请码</td></tr>';
+            if (typeof VXUI !== 'undefined' && VXUI.translateContainer) VXUI.translateContainer(container);
+            return;
+        }
+
+        var html = '';
+        var self = this;
+        this._inviteCodes.forEach(function(code) {
+            var isExpired = code.expires_at && new Date(code.expires_at) < new Date();
+            var statusClass = code.status === 'active' && !isExpired ? 'active' : 'revoked';
+            var statusText = code.status === 'active' && !isExpired
+                ? self._t('sync_active')
+                : self._t('sync_revoked');
+            var permLabel = code.permission === 'read'
+                ? self._t('sync_permission_read')
+                : self._t('sync_permission_write');
+            var permClass = code.permission === 'read' ? 'read' : 'read-write';
+            var expiresText = code.expires_days === 0
+                ? self._t('sync_expires_unlimited')
+                : (code.expires_at || '-');
+
+            html += '<tr>' +
+                '<td><span class="vx-sync-invite-code">' + self.escapeHtml(code.invite_code) + '</span></td>' +
+                '<td><span class="vx-sync-permission-badge ' + permClass + '">' + permLabel + '</span></td>' +
+                '<td>' + code.used_count + (code.max_uses > 0 ? '/' + code.max_uses : '') + '</td>' +
+                '<td>' + (isExpired ? '<span class="vx-sync-expired">' + expiresText + '</span>' : expiresText) + '</td>' +
+                '<td><span class="vx-sync-status-badge ' + statusClass + '">' + statusText + '</span></td>' +
+                '<td>' +
+                    (code.status === 'active'
+                        ? '<button class="vx-btn vx-btn-danger vx-btn-xs vx-sync-btn-xs" onclick="VX_SYNC.revokeInviteCode(' + code.id + ')">' + self._t('sync_revoke') + '</button>'
+                        : '') +
+                '</td>' +
+            '</tr>';
+        });
+        container.innerHTML = html;
+    },
+
+    async revokeInviteCode(codeId) {
+        if (!confirm(this._t('sync_revoke_invite_confirm'))) return;
+
+        try {
+            var resp = await this.wsRequest('invite_code_revoke_req', {
+                drive_id: this.currentDrive.drive_id,
+                code_id: codeId,
+            });
+            if (resp.error) {
+                VXUI.showMsg(resp.error, 'error');
+                return;
+            }
+            VXUI.showMsg(this._t('sync_invite_revoked'), 'success');
+            this.loadInviteCodes();
+        } catch (e) {
+            console.error('revoke failed', e);
+            VXUI.showMsg('撤销失败，请重试', 'error');
+        }
+    },
+
+    // ========== Join Request Operations ==========
+
+    async loadJoinRequests() {
+        if (!this.currentDrive || !this.isHost) return;
+
+        try {
+            var resp = await this.wsRequest('join_request_list_req', {
+                drive_id: this.currentDrive.drive_id,
+            });
+            if (resp.error) {
+                console.error('load join requests failed', resp.error);
+                return;
+            }
+            this._joinRequests = resp.requests || [];
+            this.renderJoinRequestList();
+        } catch (e) {
+            console.error('loadJoinRequests error', e);
+        }
+    },
+
+    renderJoinRequestList() {
+        var container = document.getElementById('sync-join-request-list');
+        if (!this._joinRequests || this._joinRequests.length === 0) {
+            container.innerHTML = '<tr class="vx-sync-empty-row"><td colspan="6" data-tpl="sync_no_requests">暂无申请</td></tr>';
+            if (typeof VXUI !== 'undefined' && VXUI.translateContainer) VXUI.translateContainer(container);
+            return;
+        }
+
+        var html = '';
+        var self = this;
+        this._joinRequests.forEach(function(req) {
+            var permLabel = req.permission === 'read'
+                ? self._t('sync_permission_read')
+                : self._t('sync_permission_write');
+            var permClass = req.permission === 'read' ? 'read' : 'read-write';
+            var statusClass = req.status;
+            var statusText = self._t('sync_' + req.status);
+            var expiresText = req.expires_at || self._t('sync_expires_unlimited');
+
+            html += '<tr>' +
+                '<td>' + self.escapeHtml(req.applicant_name || '#' + req.applicant_uid) + '</td>' +
+                '<td><span class="vx-sync-permission-badge ' + permClass + '">' + permLabel + '</span></td>' +
+                '<td>' + expiresText + '</td>' +
+                '<td><span class="vx-sync-status-badge ' + statusClass + '">' + statusText + '</span></td>' +
+                '<td>' + req.created_at + '</td>' +
+                '<td>' +
+                    (req.status === 'pending'
+                        ? '<button class="vx-btn vx-btn-primary vx-btn-xs vx-sync-btn-xs" onclick="VX_SYNC.approveJoinRequest(' + req.id + ')">' + self._t('sync_approve') + '</button> ' +
+                          '<button class="vx-btn vx-btn-danger vx-btn-xs vx-sync-btn-xs" onclick="VX_SYNC.rejectJoinRequest(' + req.id + ')">' + self._t('sync_reject') + '</button>'
+                        : req.status === 'approved'
+                        ? '<button class="vx-btn vx-btn-danger vx-btn-xs vx-sync-btn-xs" onclick="VX_SYNC.revokeJoinRequest(' + req.id + ')">' + self._t('sync_revoke') + '</button>'
+                        : '') +
+                '</td>' +
+            '</tr>';
+        });
+        container.innerHTML = html;
+        if (typeof VXUI !== 'undefined' && VXUI.translateContainer) VXUI.translateContainer(container);
+    },
+
+    async approveJoinRequest(requestId) {
+        try {
+            var resp = await this.wsRequest('join_request_approve', {
+                drive_id: this.currentDrive.drive_id,
+                request_id: requestId,
+            });
+            if (resp.error) {
+                VXUI.showMsg(resp.error, 'error');
+                return;
+            }
+            VXUI.showMsg(this._t('sync_request_approved'), 'success');
+            this.loadJoinRequests();
+        } catch (e) {
+            console.error('approve failed', e);
+            VXUI.showMsg('批准失败，请重试', 'error');
+        }
+    },
+
+    async rejectJoinRequest(requestId) {
+        if (!confirm(this._t('sync_reject_confirm'))) return;
+        try {
+            var resp = await this.wsRequest('join_request_reject', {
+                drive_id: this.currentDrive.drive_id,
+                request_id: requestId,
+            });
+            if (resp.error) {
+                VXUI.showMsg(resp.error, 'error');
+                return;
+            }
+            VXUI.showMsg(this._t('sync_request_rejected'), 'success');
+            this.loadJoinRequests();
+        } catch (e) {
+            console.error('reject failed', e);
+            VXUI.showMsg('拒绝失败，请重试', 'error');
+        }
+    },
+
+    async revokeJoinRequest(requestId) {
+        if (!confirm(this._t('sync_revoke_permission_confirm'))) return;
+        try {
+            var resp = await this.wsRequest('join_request_revoke', {
+                drive_id: this.currentDrive.drive_id,
+                request_id: requestId,
+            });
+            if (resp.error) {
+                VXUI.showMsg(resp.error, 'error');
+                return;
+            }
+            VXUI.showMsg(this._t('sync_permission_revoked'), 'success');
+            this.loadJoinRequests();
+        } catch (e) {
+            console.error('revoke failed', e);
+            VXUI.showMsg('撤销失败，请重试', 'error');
+        }
+    },
+
+    // ========== Notification Operations ==========
+
+    async loadNotifications() {
+        try {
+            var resp = await this.wsRequest('notification_list_req', {});
+            if (resp.error) {
+                console.error('load notifications failed', resp.error);
+                return;
+            }
+            this._notifications = resp.notifications || [];
+            this.renderNotifications();
+            this.updateUnreadBadge();
+        } catch (e) {
+            console.error('loadNotifications error', e);
+        }
+    },
+
+    renderNotifications() {
+        var container = document.getElementById('sync-messages-list');
+        var markAllBtn = document.getElementById('sync-mark-all-read');
+
+        if (!this._notifications || this._notifications.length === 0) {
+            container.innerHTML = '<div class="vx-sync-messages-empty" data-tpl="sync_no_messages">暂无消息</div>';
+            if (typeof VXUI !== 'undefined' && VXUI.translateContainer) VXUI.translateContainer(container);
+            if (markAllBtn) markAllBtn.style.display = 'none';
+            return;
+        }
+
+        if (markAllBtn) {
+            markAllBtn.style.display = this._unreadNotificationCount > 0 ? 'inline-block' : 'none';
+        }
+
+        var html = '';
+        var self = this;
+        this._notifications.forEach(function(n) {
+            var classes = 'vx-sync-message-item' + (n.is_read ? '' : ' unread');
+            html += '<div class="' + classes + '" onclick="VX_SYNC.openNotification(' + n.id + ')">' +
+                '<div class="vx-sync-message-header">' +
+                    '<span class="vx-sync-message-title">' + self.escapeHtml(n.title) + '</span>' +
+                    '<span class="vx-sync-message-time">' + n.created_at + '</span>' +
+                '</div>' +
+                (n.content ? '<div class="vx-sync-message-content">' + self.escapeHtml(n.content) + '</div>' : '') +
+            '</div>';
+        });
+        container.innerHTML = html;
+    },
+
+    async openNotification(id) {
+        var n = this._notifications.find(function(item) { return item.id === id; });
+        if (!n || n.is_read) return;
+
+        try {
+            await this.wsRequest('notification_mark_read', {
+                notification_id: id,
+            });
+            n.is_read = true;
+            this._unreadNotificationCount = Math.max(0, this._unreadNotificationCount - 1);
+            this.updateUnreadBadge();
+            this.renderNotifications();
+        } catch (e) {
+            console.error('mark read failed', e);
+        }
+    },
+
+    async markAllNotificationsRead() {
+        try {
+            await this.wsRequest('notification_mark_all_read', {});
+            this._notifications.forEach(function(n) { n.is_read = true; });
+            this._unreadNotificationCount = 0;
+            this.updateUnreadBadge();
+            this.renderNotifications();
+        } catch (e) {
+            console.error('mark all read failed', e);
+        }
+    },
+
+    updateUnreadBadge() {
+        var badge = document.getElementById('sync-unread-badge');
+        if (badge) {
+            if (this._unreadNotificationCount > 0) {
+                badge.textContent = this._unreadNotificationCount > 99 ? '99+' : this._unreadNotificationCount;
+                badge.style.display = 'inline-block';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+    },
+
+    async loadUnreadCount() {
+        try {
+            var resp = await this.wsRequest('unread_count_req', {});
+            if (resp.error) return;
+            this._unreadNotificationCount = resp.count || 0;
+            this.updateUnreadBadge();
+        } catch (e) {
+            console.error('load unread count failed', e);
+        }
+    },
+
+    // ========== Permission Helper ==========
+
+    _currentUserHasWritePermission() {
+        if (this.isHost) return true;
+        return this._currentDrivePermission === 'read_write';
+    },
 };

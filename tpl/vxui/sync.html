@@ -101,6 +101,10 @@
                     <iconpark-icon name="rotate" size="16"></iconpark-icon>
                     <span data-tpl="sync_refresh">刷新</span>
                 </button>
+                <button class="vx-btn vx-btn-ghost vx-btn-sm" onclick="VX_SYNC.showJoinDrive()">
+                    <iconpark-icon name="ticket" size="16"></iconpark-icon>
+                    <span data-tpl="sync_join">加入</span>
+                </button>
                 <button class="vx-btn vx-btn-ghost vx-btn-sm" onclick="VX_SYNC.showCreateDrive()">
                     <iconpark-icon name="circle-plus" size="16"></iconpark-icon>
                     <span data-tpl="sync_create">创建同步盘</span>
@@ -108,29 +112,60 @@
                 <span id="sync-drive-quota" class="vx-sync-drive-quota" style="display:none"></span>
             </div>
         </header>
-        <div class="vx-content vx-content-list">
-            <!-- Usage Guide (collapsible) -->
-            <div class="vx-sync-guide" id="sync-guide">
-                <button class="vx-sync-guide-header" type="button" onclick="VX_SYNC.toggleGuide()">
-                    <iconpark-icon name="circle-info" size="18"></iconpark-icon>
-                    <span data-tpl="sync_guide_title">使用方法</span>
-                    <iconpark-icon name="arrow-turn-down-left" size="16" class="vx-sync-guide-arrow"></iconpark-icon>
-                </button>
-                <div class="vx-sync-guide-body" id="sync-guide-body">
-                    <ol class="vx-sync-guide-steps">
-                        <li>
-                            <strong data-tpl="sync_guide_step1_title">创建同步盘（服务器端）</strong>
-                            <span data-tpl="sync_guide_step1_desc">在要作为服务器的设备上打开浏览器并进入本页面，点击「创建同步盘」，该设备即以服务器身份创建同步盘。然后点击创建好的同步盘，选择一个文件夹作为同步盘目录，即完成创建。</span>
-                        </li>
-                        <li>
-                            <strong data-tpl="sync_guide_step2_title">加入同步盘（其它设备）</strong>
-                            <span data-tpl="sync_guide_step2_desc">在需要加入同步盘的其它设备上打开浏览器并进入本页面，点击已有的同步盘，选择一个文件夹，即可加入同步盘并自动同步数据。</span>
-                        </li>
-                    </ol>
+        <!-- Drive List / Messages Tabs -->
+        <div class="vx-sync-main-tabs" id="sync-main-tabs">
+            <button class="vx-sync-main-tab active" data-tab="drives" onclick="VX_SYNC.switchMainTab('drives')">
+                <iconpark-icon name="link-cloud"></iconpark-icon>
+                <span data-tpl="sync_tab_drives">同步盘</span>
+            </button>
+            <button class="vx-sync-main-tab" data-tab="messages" onclick="VX_SYNC.switchMainTab('messages')">
+                <iconpark-icon name="message"></iconpark-icon>
+                <span data-tpl="sync_tab_messages">消息</span>
+                <span class="vx-unread-badge" id="sync-unread-badge" style="display:none"></span>
+            </button>
+        </div>
+        <div class="vx-sync-main-content" id="sync-main-content" data-active="drives">
+            <div id="sync-main-view-drives">
+                <div class="vx-content vx-content-list">
+                    <!-- Usage Guide (collapsible) -->
+                    <div class="vx-sync-guide" id="sync-guide">
+                        <button class="vx-sync-guide-header" type="button" onclick="VX_SYNC.toggleGuide()">
+                            <iconpark-icon name="circle-info" size="18"></iconpark-icon>
+                            <span data-tpl="sync_guide_title">使用方法</span>
+                            <iconpark-icon name="arrow-turn-down-left" size="16" class="vx-sync-guide-arrow"></iconpark-icon>
+                        </button>
+                        <div class="vx-sync-guide-body" id="sync-guide-body">
+                            <ol class="vx-sync-guide-steps">
+                                <li>
+                                    <strong data-tpl="sync_guide_step1_title">创建同步盘（服务器端）</strong>
+                                    <span data-tpl="sync_guide_step1_desc">在要作为服务器的设备上打开浏览器并进入本页面，点击「创建同步盘」，该设备即以服务器身份创建同步盘。然后点击创建好的同步盘，选择一个文件夹作为同步盘目录，即完成创建。</span>
+                                </li>
+                                <li>
+                                    <strong data-tpl="sync_guide_step2_title">加入同步盘（其它设备）</strong>
+                                    <span data-tpl="sync_guide_step2_desc">在需要加入同步盘的其它设备上打开浏览器并进入本页面，点击已有的同步盘，选择一个文件夹，即可加入同步盘并自动同步数据。</span>
+                                </li>
+                            </ol>
+                        </div>
+                    </div>
+
+                    <div class="vx-sync-drives-grid" id="sync-drives"></div>
                 </div>
             </div>
-
-            <div class="vx-sync-drives-grid" id="sync-drives"></div>
+            <div id="sync-main-view-messages" style="display:none">
+                <div class="vx-content vx-content-list">
+                    <div class="vx-sync-messages-container">
+                        <div class="vx-sync-messages-header">
+                            <span data-tpl="sync_notifications">系统消息</span>
+                            <button class="vx-btn vx-btn-ghost vx-btn-sm" onclick="VX_SYNC.markAllNotificationsRead()" id="sync-mark-all-read" style="display:none">
+                                <span data-tpl="sync_mark_all_read">全部已读</span>
+                            </button>
+                        </div>
+                        <div class="vx-sync-messages-list" id="sync-messages-list">
+                            <div class="vx-sync-messages-empty" data-tpl="sync_no_messages">暂无消息</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -261,6 +296,10 @@
                 <iconpark-icon name="folder-open"></iconpark-icon>
                 <span data-tpl="sync_tab_files">文件</span>
             </button>
+            <button class="vx-sync-detail-tab" data-tab="permissions" onclick="VX_SYNC.switchDetailTab('permissions')" id="sync-tab-permissions">
+                <iconpark-icon name="security"></iconpark-icon>
+                <span data-tpl="sync_tab_permissions">权限</span>
+            </button>
             <button class="vx-sync-detail-tab" data-tab="peers" onclick="VX_SYNC.switchDetailTab('peers')">
                 <iconpark-icon name="user"></iconpark-icon>
                 <span data-tpl="sync_tab_peers">已连接</span>
@@ -352,6 +391,63 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Permissions View -->
+                <div class="vx-sync-list-view" id="sync-view-permissions" style="display:none">
+                    <div class="vx-sync-permission-section">
+                        <div class="vx-sync-permission-header">
+                            <h4 data-tpl="sync_invite_codes">邀请码</h4>
+                            <button class="vx-btn vx-btn-primary vx-btn-sm" onclick="VX_SYNC.showGenerateInviteCode()">
+                                <iconpark-icon name="circle-plus"></iconpark-icon>
+                                <span data-tpl="sync_generate_invite">生成邀请码</span>
+                            </button>
+                        </div>
+                        <div class="vx-sync-table-container">
+                            <table class="vx-sync-table">
+                                <thead>
+                                    <tr>
+                                        <th data-tpl="sync_invite_code">邀请码</th>
+                                        <th data-tpl="sync_permission">权限</th>
+                                        <th data-tpl="sync_used_count">已使用</th>
+                                        <th data-tpl="sync_expires">过期时间</th>
+                                        <th data-tpl="sync_status">状态</th>
+                                        <th data-tpl="sync_actions">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="sync-invite-code-list">
+                                    <tr class="vx-sync-empty-row">
+                                        <td colspan="6" data-tpl="sync_no_invite_codes">暂无邀请码</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="vx-sync-permission-section">
+                        <div class="vx-sync-permission-header">
+                            <h4 data-tpl="sync_join_requests">加入申请</h4>
+                        </div>
+                        <div class="vx-sync-table-container">
+                            <table class="vx-sync-table">
+                                <thead>
+                                    <tr>
+                                        <th data-tpl="sync_applicant">申请人</th>
+                                        <th data-tpl="sync_permission">权限</th>
+                                        <th data-tpl="sync_expires">权限过期</th>
+                                        <th data-tpl="sync_status">状态</th>
+                                        <th data-tpl="sync_created_at">申请时间</th>
+                                        <th data-tpl="sync_actions">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="sync-join-request-list">
+                                    <tr class="vx-sync-empty-row">
+                                        <td colspan="6" data-tpl="sync_no_requests">暂无申请</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -433,6 +529,142 @@
         <div class="vx-modal-footer">
             <button class="vx-btn vx-btn-secondary" onclick="VX_SYNC.cancelDeviceName()" data-tpl="btn_cancel">取消</button>
             <button class="vx-btn vx-btn-primary" id="sync-device-name-save" data-tpl="btn_save">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- Join Drive with Invite Code Modal -->
+<div id="sync-join-modal" class="vx-modal">
+    <div class="vx-modal-overlay" onclick="VX_SYNC.hideJoinDrive()"></div>
+    <div class="vx-modal-container vx-modal-sm">
+        <div class="vx-modal-header">
+            <h3 data-tpl="sync_join_drive_title">使用邀请码加入同步盘</h3>
+        </div>
+        <div class="vx-modal-body">
+            <div class="vx-sync-form-group">
+                <label data-tpl="sync_invite_code_label">邀请码</label>
+                <input type="text" id="sync-join-invite-code" class="vx-sync-input" placeholder="输入邀请码" maxlength="32" />
+            </div>
+        </div>
+        <div class="vx-modal-footer">
+            <button class="vx-btn vx-btn-secondary" onclick="VX_SYNC.hideJoinDrive()" data-tpl="btn_cancel">取消</button>
+            <button class="vx-btn vx-btn-primary" onclick="VX_SYNC.doJoinDrive()">
+                <iconpark-icon name="ticket"></iconpark-icon>
+                <span data-tpl="sync_join_submit">提交申请</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Generate Invite Code Modal -->
+<div id="sync-generate-invite-modal" class="vx-modal">
+    <div class="vx-modal-overlay" onclick="VX_SYNC.hideGenerateInviteCode()"></div>
+    <div class="vx-modal-container vx-modal-md">
+        <div class="vx-modal-header">
+            <h3 data-tpl="sync_generate_invite_title">生成邀请码</h3>
+        </div>
+        <div class="vx-modal-body">
+            <div class="vx-sync-form-row">
+                <div class="vx-sync-form-group">
+                    <label data-tpl="sync_invite_expires">邀请码有效期</label>
+                    <div class="vx-sync-radio-group">
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="invite_expires" value="0" checked>
+                            <span data-tpl="sync_expires_unlimited">无限期</span>
+                        </label>
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="invite_expires" value="7">
+                            <span>7 天</span>
+                        </label>
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="invite_expires" value="30">
+                            <span>30 天</span>
+                        </label>
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="invite_expires" value="custom">
+                            <span data-tpl="sync_expires_custom">自定义</span>
+                        </label>
+                    </div>
+                    <input type="number" id="invite-expires-custom" class="vx-sync-input vx-sync-input-sm" placeholder="天数" min="1" max="3650" style="display:none; margin-top:8px;" />
+                </div>
+            </div>
+
+            <div class="vx-sync-form-row">
+                <div class="vx-sync-form-group">
+                    <label data-tpl="sync_invite_max_uses">可用次数</label>
+                    <div class="vx-sync-radio-group">
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="max_uses" value="0" checked>
+                            <span data-tpl="sync_uses_unlimited">无限次</span>
+                        </label>
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="max_uses" value="1">
+                            <span>1 次</span>
+                        </label>
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="max_uses" value="5">
+                            <span>5 次</span>
+                        </label>
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="max_uses" value="custom">
+                            <span data-tpl="sync_uses_custom">自定义</span>
+                        </label>
+                    </div>
+                    <input type="number" id="max-uses-custom" class="vx-sync-input vx-sync-input-sm" placeholder="次数" min="1" max="1000" style="display:none; margin-top:8px;" />
+                </div>
+            </div>
+
+            <div class="vx-sync-form-row">
+                <div class="vx-sync-form-group">
+                    <label data-tpl="sync_permission_type">权限</label>
+                    <div class="vx-sync-radio-group">
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="permission" value="read" checked>
+                            <span data-tpl="sync_permission_read">只读</span>
+                        </label>
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="permission" value="read_write">
+                            <span data-tpl="sync_permission_write">读写</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="vx-sync-form-row">
+                <div class="vx-sync-form-group">
+                    <label data-tpl="sync_permission_expires">权限有效期</label>
+                    <div class="vx-sync-radio-group">
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="perm_expires" value="0" checked>
+                            <span data-tpl="sync_expires_unlimited">无限期</span>
+                        </label>
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="perm_expires" value="30">
+                            <span>30 天</span>
+                        </label>
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="perm_expires" value="90">
+                            <span>90 天</span>
+                        </label>
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="perm_expires" value="365">
+                            <span>1 年</span>
+                        </label>
+                        <label class="vx-sync-radio">
+                            <input type="radio" name="perm_expires" value="custom">
+                            <span data-tpl="sync_expires_custom">自定义</span>
+                        </label>
+                    </div>
+                    <input type="number" id="perm-expires-custom" class="vx-sync-input vx-sync-input-sm" placeholder="天数" min="1" max="3650" style="display:none; margin-top:8px;" />
+                </div>
+            </div>
+        </div>
+        <div class="vx-modal-footer">
+            <button class="vx-btn vx-btn-secondary" onclick="VX_SYNC.hideGenerateInviteCode()" data-tpl="btn_cancel">取消</button>
+            <button class="vx-btn vx-btn-primary" onclick="VX_SYNC.doGenerateInviteCode()">
+                <iconpark-icon name="circle-plus"></iconpark-icon>
+                <span data-tpl="sync_generate">生成</span>
+            </button>
         </div>
     </div>
 </div>

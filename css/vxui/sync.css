@@ -1329,3 +1329,367 @@ html.vx-dark .vx-sync-role-badge.role-peer {
         gap: 2px;
     }
 }
+
+/* ==================== Permission Management Styles ==================== */
+
+/* Main Tabs (Drives / Messages) */
+.vx-sync-main-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 8px 12px;
+    background: var(--vx-bg-secondary);
+    border-bottom: 1px solid var(--vx-border);
+    flex-shrink: 0;
+}
+
+.vx-sync-main-tab {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 12px;
+    border: none;
+    background: transparent;
+    border-radius: var(--vx-radius);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--vx-text-secondary);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.vx-sync-main-tab:hover {
+    color: var(--vx-text);
+}
+
+.vx-sync-main-tab.active {
+    background: var(--vx-primary);
+    color: white;
+}
+
+.vx-sync-main-tab iconpark-icon {
+    font-size: 16px;
+}
+
+.vx-unread-badge {
+    min-width: 18px;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: 9px;
+    background: #ef4444;
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+    text-align: center;
+}
+
+.vx-sync-main-tab.active .vx-unread-badge {
+    background: rgba(255, 255, 255, 0.3);
+    color: white;
+}
+
+.vx-sync-main-content {
+    flex: 1;
+    overflow-y: auto;
+}
+
+/* Messages List */
+.vx-sync-messages-container {
+    margin: 16px;
+    background: var(--vx-surface);
+    border: 1px solid var(--vx-border);
+    border-radius: var(--vx-radius);
+    overflow: hidden;
+}
+
+.vx-sync-messages-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--vx-border);
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--vx-text);
+}
+
+.vx-sync-messages-list {
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.vx-sync-message-item {
+    display: flex;
+    flex-direction: column;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--vx-border);
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.vx-sync-message-item:last-child {
+    border-bottom: none;
+}
+
+.vx-sync-message-item:hover {
+    background: var(--vx-bg-secondary);
+}
+
+.vx-sync-message-item.unread {
+    background: rgba(37, 99, 235, 0.05);
+}
+
+.vx-sync-message-item.unread:hover {
+    background: rgba(37, 99, 235, 0.08);
+}
+
+.vx-sync-message-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.vx-sync-message-title {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--vx-text);
+}
+
+.vx-sync-message-time {
+    font-size: 12px;
+    color: var(--vx-text-muted);
+    white-space: nowrap;
+}
+
+.vx-sync-message-content {
+    font-size: 13px;
+    color: var(--vx-text-secondary);
+}
+
+.vx-sync-message-empty {
+    text-align: center;
+    padding: 32px 16px;
+    font-size: 14px;
+    color: var(--vx-text-muted);
+}
+
+/* Permission Tab */
+.vx-sync-permission-section {
+    margin: 16px;
+    background: var(--vx-surface);
+    border: 1px solid var(--vx-border);
+    border-radius: var(--vx-radius);
+    overflow: hidden;
+}
+
+.vx-sync-permission-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--vx-border);
+}
+
+.vx-sync-permission-header h4 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--vx-text);
+}
+
+.vx-sync-table-container {
+    overflow-x: auto;
+}
+
+.vx-sync-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.vx-sync-table thead {
+    background: var(--vx-bg);
+}
+
+.vx-sync-table th {
+    padding: 10px 12px;
+    text-align: left;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--vx-text-secondary);
+    border-bottom: 1px solid var(--vx-border);
+    white-space: nowrap;
+}
+
+.vx-sync-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--vx-border);
+    font-size: 13px;
+    color: var(--vx-text);
+}
+
+.vx-sync-table tr:hover td {
+    background: var(--vx-bg-secondary);
+}
+
+.vx-sync-empty-row td {
+    text-align: center;
+    color: var(--vx-text-muted);
+}
+
+.vx-sync-invite-code {
+    font-family: monospace;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+
+.vx-sync-permission-badge {
+    display: inline-flex;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.vx-sync-permission-badge.read {
+    background: rgba(107, 114, 128, 0.12);
+    color: #6b7280;
+}
+
+.vx-sync-permission-badge.read-write {
+    background: rgba(16, 185, 129, 0.12);
+    color: #059669;
+}
+
+.vx-sync-status-badge {
+    display: inline-flex;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.vx-sync-status-badge.active {
+    background: rgba(16, 185, 129, 0.12);
+    color: #059669;
+}
+
+.vx-sync-status-badge.revoked {
+    background: rgba(239, 68, 68, 0.12);
+    color: #ef4444;
+}
+
+.vx-sync-status-badge.pending {
+    background: rgba(245, 158, 11, 0.12);
+    color: #d97706;
+}
+
+.vx-sync-status-badge.approved {
+    background: rgba(16, 185, 129, 0.12);
+    color: #059669;
+}
+
+.vx-sync-status-badge.rejected {
+    background: rgba(239, 68, 68, 0.12);
+    color: #ef4444;
+}
+
+.vx-sync-btn-xs {
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+.vx-sync-expired {
+    color: #ef4444;
+}
+
+/* Generate Invite Modal - Form Rows */
+.vx-sync-form-row {
+    margin-bottom: 16px;
+}
+
+.vx-sync-form-row:last-child {
+    margin-bottom: 0;
+}
+
+.vx-sync-radio-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+label.vx-sync-radio {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border: 1px solid var(--vx-border);
+    border-radius: var(--vx-radius);
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--vx-text);
+    transition: all 0.15s ease;
+}
+
+label.vx-sync-radio:hover {
+    border-color: var(--vx-primary);
+    background: rgba(37, 99, 235, 0.05);
+}
+
+label.vx-sync-radio input:checked + span {
+    color: var(--vx-primary);
+    font-weight: 500;
+}
+
+.vx-sync-input-sm {
+    width: 150px;
+}
+
+/* Shared drive tag */
+.vx-sync-drive-tag-shared {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+    background: rgba(139, 92, 246, 0.12);
+    color: #8b5cf6;
+}
+
+/* ==================== Mobile Responsive for New Components ==================== */
+@media (max-width: 768px) {
+    .vx-sync-main-tab {
+        padding: 8px 8px;
+        font-size: 12px;
+        gap: 4px;
+    }
+
+    .vx-sync-permission-section {
+        margin: 12px 8px;
+    }
+
+    .vx-sync-table th,
+    .vx-sync-table td {
+        padding: 8px 6px;
+        font-size: 12px;
+    }
+
+    .vx-sync-radio-group {
+        gap: 6px;
+    }
+
+    label.vx-sync-radio {
+        padding: 4px 8px;
+        font-size: 12px;
+    }
+
+    .vx-sync-message-item {
+        padding: 10px 12px;
+    }
+}

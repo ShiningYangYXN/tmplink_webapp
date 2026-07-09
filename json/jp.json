@@ -1418,5 +1418,18 @@
     "sync_delete_host_warning": "ホストとして、削除後すべてのピアが接続できなくなり、同期ドライブのファイルメタデータが削除されます。",
     "sync_delete_local_safe": "ローカルフォルダ内のファイルは削除されません。",
     "sync_connected": "接続済み",
-    "sync_delete_drive_leave": "退出"
+    "sync_delete_drive_leave": "退出",
+    "sync_join": "参加",
+    "sync_join_drive_title": "招待コードで同期ドライブに参加",
+    "sync_join_submit": "申請を送信",
+    "sync_permission": "権限",
+    "sync_shared": "共有",
+    "sync_tab_permissions": "権限",
+    "sync_tab_drives": "同期ドライブ",
+    "sync_tab_messages": "メッセージ",
+    "sync_notifications": "システム通知",
+    "sync_no_messages": "通知なし",
+    "sync_mark_all_read": "すべて既読",
+    "read_only_permission_denied": "読み取り専用のため、書き込み操作はできません",
+    "sync_no_permission_error": "権限の有効期限が切れているか、取り消されました。同期ドライブ一覧に戻ります"
 }
