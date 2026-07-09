@@ -3866,7 +3866,7 @@ var VX_SYNC = VX_SYNC || {
             } else if (inThisTab) {
                 // 本 tab 已运行：按钮显示"进入"
                 actionHtml = '<button class="vx-btn vx-btn-primary vx-btn-sm vx-sync-drive-action" onclick="VX_SYNC.enterDrive(\'' + drive.drive_id + '\'); event.stopPropagation();" title="' + this._t('sync_enter_session') + '">' +
-                    '<iconpark-icon name="arrow-right"></iconpark-icon>' +
+                    '<iconpark-icon name="forward"></iconpark-icon>' +
                     '<span>' + this._t('sync_enter_session') + '</span>' +
                     '</button>';
             } else if (isHost) {
@@ -3961,7 +3961,7 @@ var VX_SYNC = VX_SYNC || {
             // pending
             statusBadgeHtml = '<span class="vx-sync-drive-tag vx-sync-drive-tag-pending">' + this._t('sync_join_status_pending') + '</span>';
             actionHtml = '<button class="vx-btn vx-btn-ghost vx-btn-sm vx-sync-drive-action" disabled title="' + this._t('sync_join_status_pending') + '">' +
-                '<iconpark-icon name="time"></iconpark-icon>' +
+                '<iconpark-icon name="clock"></iconpark-icon>' +
                 '<span>' + this._t('sync_join_status_pending') + '</span>' +
                 '</button>';
         }
