@@ -3754,13 +3754,28 @@ var VX_SYNC = VX_SYNC || {
             var isHost = (drive.host_device_id && drive.host_device_id === myDeviceId);
             var hostOnline = (drive.host_online === 1 || drive.host_online === true);
             var deleteLabel = isHost ? this._t('sync_delete_drive_title') : this._t('sync_delete_drive_leave');
-            var roleTag = isHost
-                ? '<span class="vx-sync-drive-tag vx-sync-drive-tag-host">' + this._t('sync_role_host') + '</span>'
-                : '<span class="vx-sync-drive-tag vx-sync-drive-tag-peer">' + this._t('sync_role_peer') + '</span>';
 
-            // Action button depending on role
+            // 多 session 状态：本 tab 已运行 / 其它 tab 已占用 / 空闲
+            var inThisTab = this.sessions.has(drive.drive_id);
+            var lockedByOtherTab = !inThisTab && !!this._localDriveLocks[drive.drive_id];
+
+            // Action button depending on role & lock state
             var actionHtml;
-            if (isHost) {
+            var cardOnClick = 'VX_SYNC.enterDrive(\'' + drive.drive_id + '\')';
+            if (lockedByOtherTab) {
+                // 其它 tab 已占用：禁用按钮，卡片点击提示
+                cardOnClick = 'VX_SYNC._showLockedByOtherTabHint(\'' + drive.drive_id + '\')';
+                actionHtml = '<button class="vx-btn vx-btn-primary vx-btn-sm vx-sync-drive-action" disabled title="' + this._t('sync_running_in_other_tab') + '">' +
+                    '<iconpark-icon name="lock"></iconpark-icon>' +
+                    '<span>' + this._t('sync_running_in_other_tab') + '</span>' +
+                    '</button>';
+            } else if (inThisTab) {
+                // 本 tab 已运行：按钮显示"进入"
+                actionHtml = '<button class="vx-btn vx-btn-primary vx-btn-sm vx-sync-drive-action" onclick="VX_SYNC.enterDrive(\'' + drive.drive_id + '\'); event.stopPropagation();" title="' + this._t('sync_enter_session') + '">' +
+                    '<iconpark-icon name="arrow-right"></iconpark-icon>' +
+                    '<span>' + this._t('sync_enter_session') + '</span>' +
+                    '</button>';
+            } else if (isHost) {
                 // Host: show "启动服务器" button (no online/offline status)
                 actionHtml = '<button class="vx-btn vx-btn-primary vx-btn-sm vx-sync-drive-action" onclick="VX_SYNC.enterDrive(\'' + drive.drive_id + '\'); event.stopPropagation();" title="' + this._t('sync_start_server') + '">' +
                     '<iconpark-icon name="play"></iconpark-icon>' +
@@ -3777,7 +3792,12 @@ var VX_SYNC = VX_SYNC || {
 
             // Build role tag with online/offline status for Peer role
             var roleTagHtml;
-            if (isHost) {
+            if (inThisTab) {
+                // 本 tab 运行中：显示"运行中"标签
+                roleTagHtml = '<span class="vx-sync-drive-tag vx-sync-drive-tag-running">' + this._t('sync_running_in_session') + '</span>';
+            } else if (lockedByOtherTab) {
+                roleTagHtml = '<span class="vx-sync-drive-tag vx-sync-drive-tag-locked">' + this._t('sync_running_in_other_tab') + '</span>';
+            } else if (isHost) {
                 roleTagHtml = '<span class="vx-sync-drive-tag vx-sync-drive-tag-host">' + this._t('sync_role_host') + '</span>';
             } else {
                 var dotCls = 'vx-sync-host-dot ' + (hostOnline ? 'online' : 'offline');
@@ -3791,7 +3811,10 @@ var VX_SYNC = VX_SYNC || {
             var isShared = !isHost && String(drive.host_uid) !== String(TL.uid);
             var sharedTagHtml = isShared ? '<span class="vx-sync-drive-tag-shared">' + this._t('sync_shared') + '</span>' : '';
 
-            return '<div class="vx-sync-drive-card" onclick="VX_SYNC.enterDrive(\'' + drive.drive_id + '\')">' +
+            var cardCls = 'vx-sync-drive-card';
+            if (lockedByOtherTab) cardCls += ' vx-sync-drive-card-locked';
+
+            return '<div class="' + cardCls + '" onclick="' + cardOnClick + '">' +
                 '<button class="vx-sync-drive-delete-btn" onclick="VX_SYNC.promptDeleteDrive(\'' + drive.drive_id + '\', event)" title="' + deleteLabel + '">' +
                     '<iconpark-icon name="trash"></iconpark-icon>' +
                 '</button>' +
@@ -3877,6 +3900,12 @@ var VX_SYNC = VX_SYNC || {
             this.joinApprovedDrive(driveId);
         }
     },
+
+    // 卡片被其它 tab 占用时，点击提示用户
+    _showLockedByOtherTabHint(driveId) {
+        VXUI.showMsg(this._t('sync_drive_locked_other_tab_hint'), 'warn');
+    },
+
     
     renderDetail() {
         document.getElementById('sync-drive-list').style.display = 'none';

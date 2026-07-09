@@ -409,6 +409,29 @@
     color: #6b7280;
 }
 
+/* Running-in-this-tab tag (green) */
+.vx-sync-drive-tag-running {
+    background: rgba(16, 185, 129, 0.12);
+    color: #10b981;
+}
+
+/* Locked-by-other-tab tag (amber) */
+.vx-sync-drive-tag-locked {
+    background: rgba(245, 158, 11, 0.12);
+    color: #f59e0b;
+}
+
+/* Dimmed card when locked by another tab */
+.vx-sync-drive-card.vx-sync-drive-card-locked {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+.vx-sync-drive-card.vx-sync-drive-card-locked:hover {
+    border-color: var(--vx-border);
+    box-shadow: none;
+}
+
 /* Peer status tag (online/offline) */
 .vx-sync-drive-status {
     display: inline-flex;
