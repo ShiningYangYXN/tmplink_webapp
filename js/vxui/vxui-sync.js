@@ -1181,7 +1181,7 @@ var VX_SYNC = VX_SYNC || {
             // Record each detected deletion in activity list
             for (var di = 0; di < deletedFiles.length; di++) {
                 var dname = deletedFiles[di].split('/').pop();
-                this.addActivity('delete', dname + ' (\u672c\u673a)');
+                this.addActivity('delete', dname, { source: this._t('sync_this_device'), target: this._t('sync_role_host') });
             }
 
             console.log('[SYNC] Peer sending file report to Host: ' + report.length + ' files, ' + deletedFiles.length + ' deleted' + (folderChanged ? ' (folder changed)' : ''));
@@ -1250,7 +1250,7 @@ var VX_SYNC = VX_SYNC || {
                 files.forEach(function(f) { newPaths[f.sha1] = true; });
                 for (var di = 0; di < oldCache.length; di++) {
                     if (!newPaths[oldCache[di].sha1]) {
-                        self.addActivity('delete', oldCache[di].name + ' (\u672c\u673a)');
+                        self.addActivity('delete', oldCache[di].name, { source: self._t('sync_this_device'), target: self._t('sync_all_peers') });
                         // Track as pending Host deletion to prevent race condition
                         var delPath = (oldCache[di].parent_path === '/' ? '' : oldCache[di].parent_path) + '/' + oldCache[di].name;
                         if (!self._hostPendingOps) self._hostPendingOps = {};
@@ -1304,7 +1304,7 @@ var VX_SYNC = VX_SYNC || {
                 // Record each detected deletion in activity list
                 for (var di = 0; di < deletedFiles.length; di++) {
                     var dname = deletedFiles[di].split('/').pop();
-                    this.addActivity('delete', dname + ' (\u672c\u673a)');
+                    this.addActivity('delete', dname, { source: this._t('sync_this_device'), target: this._t('sync_role_host') });
                 }
 
                 // Detect changes by comparing fingerprints
@@ -1778,10 +1778,10 @@ var VX_SYNC = VX_SYNC || {
             // because they fire on every delta cycle (including echo reports
             // where Peer re-reports files it just received from Host).
             if (deleteOnHost.length > 0) {
-                this.addActivity('sync_delete', this._t('sync_act_host_delete').replace('{n}', deleteOnHost.length));
+                this.addActivity('sync_delete', this._t('sync_act_host_delete').replace('{n}', deleteOnHost.length), { source: peerSource, target: this._t('sync_this_device') });
             }
             if (deleteOnPeer.length > 0) {
-                this.addActivity('sync_delete', this._t('sync_act_notify_peer_delete').replace('{n}', deleteOnPeer.length));
+                this.addActivity('sync_delete', this._t('sync_act_notify_peer_delete').replace('{n}', deleteOnPeer.length), { source: this._t('sync_this_device'), target: this._t('sync_all_peers') });
             }
         } catch (e) {
             console.error('[SYNC] handlePeerFileReport failed:', e);
@@ -2796,7 +2796,13 @@ var VX_SYNC = VX_SYNC || {
                     this.hideProgress();
                     this.updateTransferStats();
                     this._removeTransferActivity(dlSha1);
-                    this.addActivity(dlMeta.sync ? 'sync_received' : 'download', dlName);
+                    var dlSource = this.isHost
+                        ? ((this._peerConnections[download.peerDeviceId] && this._peerConnections[download.peerDeviceId].displayName) || download.peerDeviceId || '')
+                        : this._t('sync_role_host');
+                    var dlMode = this.isHost
+                        ? ((this._peerConnections[download.peerDeviceId] && this._peerConnections[download.peerDeviceId].mode) || 'unknown')
+                        : (this._hostConnectionMode || 'unknown');
+                    this.addActivity(dlMeta.sync ? 'sync_received' : 'download', dlName, { source: dlSource, target: this._t('sync_this_device'), mode: dlMode });
                     console.log('[SYNC] Download complete: ' + dlName + ' chunks=' + chunkCount + ' size=' + dlSize + ' sync=' + !!dlMeta.sync);
                 }
                 break;
@@ -2871,7 +2877,7 @@ var VX_SYNC = VX_SYNC || {
         this._transferLastTime = Date.now();
         this._transferSpeed = 0;
         var uploadMode = this.isHost ? 'local' : (this._hostConnectionMode || 'unknown');
-        this.upsertTransferActivity('upload', file.name, sha1, 0, '', uploadMode, '');
+        this.upsertTransferActivity('upload', file.name, sha1, 0, '', uploadMode, this.isHost ? '' : this._t('sync_role_host'));
         
         const CHUNK_SIZE = this.CHUNK_SIZE;
         var totalChunks = Math.ceil(file.size / CHUNK_SIZE);
@@ -2891,7 +2897,7 @@ var VX_SYNC = VX_SYNC || {
                 self._transferStats.bytesUploaded += file.size;
                 self.hideProgress();
                 self._removeTransferActivity(sha1);
-                self.addActivity('upload', metadata.name);
+                self.addActivity('upload', metadata.name, { source: self._t('sync_this_device'), target: self._t('sync_role_host'), mode: self._hostConnectionMode || 'unknown' });
                 console.log('[SYNC] Upload complete: ' + file.name + ' size=' + file.size + ' chunks=' + chunkIndex);
                 return;
             }
@@ -2915,7 +2921,7 @@ var VX_SYNC = VX_SYNC || {
                     console.warn('[SYNC] DC closed during backpressure at chunk ' + (chunkIndex + 1));
                     self.hideProgress();
                     self._removeTransferActivity(sha1);
-                    self.addActivity('upload', '发送中断: ' + metadata.name);
+                    self.addActivity('upload', '\u53d1\u9001\u4e2d\u65ad: ' + metadata.name, { source: self._t('sync_this_device'), target: self._t('sync_role_host'), mode: self._hostConnectionMode || 'unknown' });
                     return;
                 }
                 self.acceptDC.send(buffer);
@@ -3049,7 +3055,7 @@ var VX_SYNC = VX_SYNC || {
             this._transferStats.bytesUploaded += file.size;
             this.hideProgress();
             this._removeTransferActivity(sha1);
-            this.addActivity('sync_upload', file.name);
+            this.addActivity('sync_upload', file.name, { source: this._t('sync_this_device'), target: this._t('sync_role_host'), mode: this._hostConnectionMode || 'unknown' });
             console.log('[SYNC] uploadFileToHost complete: ' + file.name + ' chunks=' + totalChunks);
         } catch (e) {
             console.warn('[SYNC] uploadFileToHost failed for ' + meta.name + ':', e);
@@ -3156,7 +3162,7 @@ var VX_SYNC = VX_SYNC || {
             });
 
             if (dlCount > 0 || upCount > 0 || delCount > 0) {
-                self.addActivity('sync_delta', '下载 ' + dlCount + ' / 上传 ' + upCount + ' / 删除 ' + delCount + ' / 冲突 ' + cfCount);
+                self.addActivity('sync_delta', '\u4e0b\u8f7d ' + dlCount + ' / \u4e0a\u4f20 ' + upCount + ' / \u5220\u9664 ' + delCount + ' / \u51b2\u7a81 ' + cfCount, { source: self._t('sync_role_host'), target: self._t('sync_this_device') });
                 // Re-render file list to show sync status
                 self.renderFileList(Array.from(self.fileCache.values()));
             }
@@ -5360,7 +5366,7 @@ var VX_SYNC = VX_SYNC || {
                 this._fileStatus.set(sha1, 'synced');
                 this._updateFileRow(sha1);
                 this._removeTransferActivity(sha1);
-                this.addActivity('upload', '发送中断: ' + (file.name || sha1));
+                this.addActivity('upload', '\u53d1\u9001\u4e2d\u65ad: ' + (file.name || sha1), { source: this._t('sync_this_device'), target: uploadTargetNode, mode: uploadMode });
                 return;
             }
 
@@ -5371,7 +5377,7 @@ var VX_SYNC = VX_SYNC || {
                 this._fileStatus.set(sha1, 'synced');
                 this._updateFileRow(sha1);
                 this._removeTransferActivity(sha1);
-                this.addActivity('upload', '发送中断: ' + (file.name || sha1));
+                this.addActivity('upload', '\u53d1\u9001\u4e2d\u65ad: ' + (file.name || sha1), { source: this._t('sync_this_device'), target: uploadTargetNode, mode: uploadMode });
                 return;
             }
 
@@ -5409,7 +5415,7 @@ var VX_SYNC = VX_SYNC || {
         this._fileStatus.set(sha1, 'synced');
         this._updateFileRow(sha1);
         this._removeTransferActivity(sha1);
-        this.addActivity('upload', '发送完成: ' + (file.name || sha1));
+        this.addActivity('upload', '\u53d1\u9001\u5b8c\u6210: ' + (file.name || sha1), { source: this._t('sync_this_device'), target: uploadTargetNode, mode: uploadMode });
     },
 
     resolveConflict(choice) {
@@ -5440,8 +5446,7 @@ var VX_SYNC = VX_SYNC || {
         // Also remove from local files list
         this._localFiles = (this._localFiles || []).filter(function(f) { return f.sha1 !== sha1; });
         this.renderFileList(Array.from(this.fileCache.values()));
-        var src = source ? ' (' + source + ')' : '';
-        this.addActivity('delete', fileName + src);
+        this.addActivity('delete', fileName, { source: source || this._t('sync_this_device'), target: this._t('sync_this_device') });
     },
     
     handleRemoteRename(sha1, newName, newSha1, source) {
@@ -5467,8 +5472,7 @@ var VX_SYNC = VX_SYNC || {
         };
         this.fileCache.set(newEntry.sha1, newEntry);
         this.renderFileList(Array.from(this.fileCache.values()));
-        var src = source ? ' (' + source + ')' : '';
-        this.addActivity('rename', oldName + ' \u2192 ' + newName + src);
+        this.addActivity('rename', oldName + ' \u2192 ' + newName, { source: source || this._t('sync_this_device'), target: this._t('sync_this_device') });
     },
 
     handleRemoteMove(sha1, newParentPath, newSha1, source) {
@@ -5493,8 +5497,7 @@ var VX_SYNC = VX_SYNC || {
         };
         this.fileCache.set(newEntry.sha1, newEntry);
         this.renderFileList(Array.from(this.fileCache.values()));
-        var src = source ? ' (' + source + ')' : '';
-        this.addActivity('move', entry.name + ' \u2192 ' + newParentPath + src);
+        this.addActivity('move', entry.name + ' \u2192 ' + newParentPath, { source: source || this._t('sync_this_device'), target: this._t('sync_this_device') });
     },
     
     async handleRemoteMkdir(data, source) {
@@ -5504,8 +5507,7 @@ var VX_SYNC = VX_SYNC || {
         if (this._boundFolder && this._boundFolder.handle) {
             await this._createLocalFolder(folderPath, data.name);
         }
-        var src = source ? ' (' + source + ')' : '';
-        this.addActivity('create_folder', data.name + src);
+        this.addActivity('create_folder', data.name, { source: source || this._t('sync_this_device'), target: this._t('sync_this_device') });
         // Only add to cache if the folder is in the current viewing path
         if (folderPath !== this.currentPath) {
             console.log('[SYNC] Remote mkdir skipped (different path): ' + folderPath + ' != ' + this.currentPath);
@@ -5542,7 +5544,7 @@ var VX_SYNC = VX_SYNC || {
         this._updateFileRow(sha1);
 
         // handleRemoteDelete handles both local FS deletion and cache update
-        await this.handleRemoteDelete(sha1, '\u672c\u673a');
+        await this.handleRemoteDelete(sha1, this._t('sync_this_device'));
 
         // Broadcast to all peers
         await this.sendToAllPeers('file_op', {
@@ -5604,7 +5606,7 @@ var VX_SYNC = VX_SYNC || {
         var ok = await this._renameLocalFile(oldPath, newName);
         if (!ok) {
             console.warn('[SYNC] Local rename failed, aborting sync');
-            this.addActivity('rename', oldName + ' \u2192 ' + newName + ' (失败)');
+            this.addActivity('rename', oldName + ' \u2192 ' + newName + ' (\u5931\u8d25)', { source: this._t('sync_this_device'), target: this._t('sync_all_peers') });
             return;
         }
 
@@ -5630,7 +5632,7 @@ var VX_SYNC = VX_SYNC || {
             parent_path: file.parent_path || '/'
         });
 
-        this.addActivity('rename', oldName + ' \u2192 ' + newName + ' (\u672c\u673a)');
+        this.addActivity('rename', oldName + ' \u2192 ' + newName, { source: this._t('sync_this_device'), target: this._t('sync_all_peers') });
         this.renderFileList(Array.from(this.fileCache.values()));
 
         // Track old path as pending rename — prevents race condition where Peer
@@ -5659,7 +5661,7 @@ var VX_SYNC = VX_SYNC || {
         var ok = await this._moveLocalFile(oldPath, newParentPath);
         if (!ok) {
             console.warn('[SYNC] Local move failed, aborting sync');
-            this.addActivity('move', file.name + ' \u2192 ' + newParentPath + ' (失败)');
+            this.addActivity('move', file.name + ' \u2192 ' + newParentPath + ' (\u5931\u8d25)', { source: this._t('sync_this_device'), target: this._t('sync_all_peers') });
             return;
         }
 
@@ -5685,7 +5687,7 @@ var VX_SYNC = VX_SYNC || {
             name: file.name
         });
 
-        this.addActivity('move', file.name + ' \u2192 ' + newParentPath + ' (\u672c\u673a)');
+        this.addActivity('move', file.name + ' \u2192 ' + newParentPath, { source: this._t('sync_this_device'), target: this._t('sync_all_peers') });
         this.renderFileList(Array.from(this.fileCache.values()));
 
         // Track old path as pending move — prevents race condition where Peer
@@ -6632,12 +6634,31 @@ var VX_SYNC = VX_SYNC || {
             time: new Date().toISOString(),
             details: details || null
         };
-        console.log('[SYNC] Activity: [' + type + '] ' + desc);
+        console.log('[SYNC] Activity: [' + type + '] ' + desc + (details ? ' ' + JSON.stringify(details) : ''));
         this._activities.unshift(activity);
         if (this._activities.length > 300) {
             this._activities = this._activities.slice(0, 300);
         }
         this.renderActivityList();
+    },
+
+    // Build HTML for activity metadata line (source → target + mode badge).
+    // details: { source, target, mode } — any field may be omitted.
+    _renderActivityMeta(details) {
+        if (!details) return '';
+        var parts = [];
+        if (details.source || details.target) {
+            var src = details.source || '—';
+            var tgt = details.target || '—';
+            parts.push('<span>' + this.escapeHtml(src) + ' \u2192 ' + this.escapeHtml(tgt) + '</span>');
+        }
+        if (details.mode === 'p2p') {
+            parts.push('<span class="vx-sync-conn-badge mode-p2p">' + this._t('sync_mode_p2p') + '</span>');
+        } else if (details.mode === 'relay') {
+            parts.push('<span class="vx-sync-conn-badge mode-relay">' + this._t('sync_mode_relay') + '</span>');
+        }
+        if (parts.length === 0) return '';
+        return '<div class="vx-sync-activity-meta">' + parts.join('') + '</div>';
     },
 
     // Update (or create) a transfer activity with progress, speed, mode, source.
@@ -6687,11 +6708,20 @@ var VX_SYNC = VX_SYNC || {
         var speedText = speed || '';
         var modeBadge = '';
         if (mode === 'p2p') {
-            modeBadge = '<span class="vx-sync-conn-badge mode-p2p">直连</span>';
+            modeBadge = '<span class="vx-sync-conn-badge mode-p2p">' + VX_SYNC._t('sync_mode_p2p') + '</span>';
         } else if (mode === 'relay') {
-            modeBadge = '<span class="vx-sync-conn-badge mode-relay">中转</span>';
+            modeBadge = '<span class="vx-sync-conn-badge mode-relay">' + VX_SYNC._t('sync_mode_relay') + '</span>';
         }
-        var sourceText = sourceNode ? (' | ' + sourceNode) : '';
+        // Build source → target text: download = sourceNode → 本机, upload = 本机 → sourceNode
+        var thisDevice = VX_SYNC._t('sync_this_device');
+        var routeText = '';
+        if (sourceNode) {
+            if (type === 'download') {
+                routeText = '<span class="vx-text-muted">' + VX_SYNC.escapeHtml(sourceNode) + ' \u2192 ' + VX_SYNC.escapeHtml(thisDevice) + '</span>';
+            } else {
+                routeText = '<span class="vx-text-muted">' + VX_SYNC.escapeHtml(thisDevice) + ' \u2192 ' + VX_SYNC.escapeHtml(sourceNode) + '</span>';
+            }
+        }
 
         var html = '<div class="vx-list-row vx-sync-transfer-row" data-transfer-id="' + id + '" data-transfer-type="' + type + '">' +
             '<div class="vx-list-name">' +
@@ -6703,7 +6733,7 @@ var VX_SYNC = VX_SYNC || {
                         '<span class="vx-text-muted">' + pctText + '</span>' +
                         (speedText ? ' &middot; <span class="vx-text-muted">' + speedText + '</span>' : '') +
                         modeBadge +
-                        sourceText +
+                        (routeText ? ' | ' + routeText : '') +
                     '</div>' +
                 '</div>' +
             '</div>' +
@@ -6754,10 +6784,14 @@ var VX_SYNC = VX_SYNC || {
         var html = nonTransfer.map(function(a) {
             var timeStr = VX_SYNC.formatDateTime(a.time);
             var icon = VX_SYNC._getActivityIcon(a.type);
+            var metaHtml = VX_SYNC._renderActivityMeta(a.details);
             return '<div class="vx-list-row">' +
                 '<div class="vx-list-name">' +
                     '<div class="vx-list-icon"><span class="vx-sync-activity-icon">' + icon + '</span></div>' +
-                    '<div class="vx-list-filename"><span>' + VX_SYNC.escapeHtml(a.desc) + '</span></div>' +
+                    '<div class="vx-list-filename">' +
+                        '<span>' + VX_SYNC.escapeHtml(a.desc) + '</span>' +
+                        metaHtml +
+                    '</div>' +
                 '</div>' +
                 '<div class="vx-list-date"><span class="vx-text-muted">' + timeStr + '</span></div>' +
             '</div>';
@@ -6768,13 +6802,28 @@ var VX_SYNC = VX_SYNC || {
         for (var i = 0; i < transferItems.length; i++) {
             var t = transferItems[i];
             if (!detailContainer.querySelector('[data-transfer-id="' + t.id + '"]')) {
+                var tModeBadge = '';
+                if (t.mode === 'p2p') {
+                    tModeBadge = '<span class="vx-sync-conn-badge mode-p2p">' + VX_SYNC._t('sync_mode_p2p') + '</span>';
+                } else if (t.mode === 'relay') {
+                    tModeBadge = '<span class="vx-sync-conn-badge mode-relay">' + VX_SYNC._t('sync_mode_relay') + '</span>';
+                }
+                var tRoute = '';
+                if (t.source) {
+                    var tDev = VX_SYNC._t('sync_this_device');
+                    if (t.type === 'download') {
+                        tRoute = '<span class="vx-text-muted">' + VX_SYNC.escapeHtml(t.source) + ' \u2192 ' + VX_SYNC.escapeHtml(tDev) + '</span>';
+                    } else {
+                        tRoute = '<span class="vx-text-muted">' + VX_SYNC.escapeHtml(tDev) + ' \u2192 ' + VX_SYNC.escapeHtml(t.source) + '</span>';
+                    }
+                }
                 html = '<div class="vx-list-row vx-sync-transfer-row" data-transfer-id="' + t.id + '" data-transfer-type="' + t.type + '">' +
                     '<div class="vx-list-name">' +
                         '<div class="vx-list-icon"><span class="vx-sync-activity-icon">' + (t.type === 'download' ? '\u2b07\ufe0f' : '\u2b06\ufe0f') + '</span></div>' +
                         '<div class="vx-list-filename">' +
                             '<span>' + VX_SYNC.escapeHtml(t.desc) + '</span>' +
                             '<div class="vx-sync-transfer-bar"><div class="vx-sync-transfer-fill" style="width:' + (t.progress || 0) + '%"></div></div>' +
-                            '<div class="vx-sync-transfer-info"><span class="vx-text-muted">' + (t.progress || 0) + '%</span></div>' +
+                            '<div class="vx-sync-transfer-info"><span class="vx-text-muted">' + (t.progress || 0) + '%</span>' + tModeBadge + (tRoute ? ' | ' + tRoute : '') + '</div>' +
                         '</div>' +
                     '</div>' +
                 '</div>' + html;

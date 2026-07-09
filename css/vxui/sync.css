@@ -1188,6 +1188,20 @@ html.vx-dark .vx-sync-role-badge.role-peer {
     flex-wrap: wrap;
 }
 
+/* Activity meta line (source → target + mode badge) for completed activities */
+.vx-sync-activity-meta {
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-top: 2px;
+    color: var(--vx-text-muted);
+}
+.vx-sync-activity-meta .vx-sync-conn-badge {
+    margin-left: 0;
+}
+
 /* File tree container (vx-list-body) needs position:relative for drop hint */
 #sync-file-tree {
     position: relative;
