@@ -101,6 +101,14 @@ var VX_SYNC = VX_SYNC || {
     _transferLastTime: 0,    // Timestamp of last speed check
     _transferSourceNode: '', // Display name of the node providing/receiving the file
 
+    // ========== Multi-Session State ==========
+    _tabID: '',                       // 当前 tab 的唯一标识（sessionStorage 持久，刷新同一 tab 保持不变）
+    _bcastChannel: null,              // BroadcastChannel 实例（同浏览器多 tab 协调）
+    _localDriveLocks: {},             // 本 tab 已知占用：drive_id -> { tab_id, role, folder_name }
+    _lockFileHeartbeatTimer: null,    // 锁文件心跳定时器（1s 间隔，运行状态指示）
+    sessions: new Map(),              // drive_id -> DriveSession（正在运行的同步盘实例）
+    activeSessionId: null,            // 当前 UI 展示的 session drive_id
+
     /**
      * WebRTC Connection State Machine
      *
@@ -136,6 +144,28 @@ var VX_SYNC = VX_SYNC || {
             return;
         }
 
+        // 生成或恢复 tab_id（sessionStorage 持久，刷新同一 tab 保持不变）
+        try {
+            this._tabID = sessionStorage.getItem('vx_sync_tab_id');
+            if (!this._tabID) {
+                this._tabID = 'tab_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 8);
+                sessionStorage.setItem('vx_sync_tab_id', this._tabID);
+            }
+        } catch (e) {
+            this._tabID = 'tab_' + Date.now().toString(36);
+        }
+
+        // BroadcastChannel：同浏览器多 tab 协调
+        try {
+            this._bcastChannel = new BroadcastChannel('vx_sync');
+            var self = this;
+            this._bcastChannel.onmessage = function(ev) {
+                self._handleBroadcastMessage(ev.data);
+            };
+        } catch (e) {
+            console.warn('[SYNC] BroadcastChannel unavailable:', e);
+        }
+
         this._resolveSyncServer();
         this._ensureDeviceId();
         this.setupDragDrop();
@@ -146,6 +176,12 @@ var VX_SYNC = VX_SYNC || {
         this._loadDeviceName();
         // Restore usage guide collapse state
         this._restoreGuideState();
+
+        // 锁文件心跳：每 1s 更新所有 session 的 drive.lock heartbeat（运行状态指示）
+        var self2 = this;
+        this._lockFileHeartbeatTimer = setInterval(function() {
+            self2._heartbeatLockFiles();
+        }, 1000);
     },
 
     // Check whether the user has accepted the sync beta consent.
@@ -155,6 +191,59 @@ var VX_SYNC = VX_SYNC || {
         } catch (e) {
             return false;
         }
+    },
+
+    // ========== BroadcastChannel Coordination ==========
+
+    // 向其它 tab 广播消息
+    _bcast(type, data) {
+        if (!this._bcastChannel) return;
+        try {
+            this._bcastChannel.postMessage(Object.assign({ type: type, tab_id: this._tabID }, data || {}));
+        } catch (e) {}
+    },
+
+    // 处理来自其它 tab 的消息
+    _handleBroadcastMessage(msg) {
+        if (!msg || msg.tab_id === this._tabID) return;
+        console.log('[SYNC] Broadcast from tab ' + msg.tab_id + ': ' + msg.type);
+        switch (msg.type) {
+            case 'drive_locked':
+                this._localDriveLocks[msg.drive_id] = {
+                    tab_id: msg.tab_id,
+                    role: msg.role,
+                    folder_name: msg.folder_name
+                };
+                // 更新 drive 卡片显示"已在其它 tab 打开"
+                this.renderDriveList();
+                break;
+            case 'drive_unlocked':
+                delete this._localDriveLocks[msg.drive_id];
+                this.renderDriveList();
+                break;
+            case 'tab_unloading':
+                // 其它 tab 正在卸载，清理它声明的占用（锁文件靠 3s 过期自动回收，这里仅清本地缓存）
+                var toRemove = [];
+                for (var did in this._localDriveLocks) {
+                    if (this._localDriveLocks[did].tab_id === msg.tab_id) {
+                        toRemove.push(did);
+                    }
+                }
+                var changed = toRemove.length > 0;
+                var self = this;
+                toRemove.forEach(function(did) { delete self._localDriveLocks[did]; });
+                if (changed) this.renderDriveList();
+                break;
+        }
+    },
+
+    // 锁文件心跳：每 1s 更新所有 session 的 drive.lock
+    _heartbeatLockFiles() {
+        if (!this.sessions || this.sessions.size === 0) return;
+        var self = this;
+        this.sessions.forEach(function(session) {
+            self._touchDriveLockFile(session);
+        });
     },
 
     // User accepted the consent — persist and finish initializing the module.
