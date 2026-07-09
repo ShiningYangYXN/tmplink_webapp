@@ -1375,6 +1375,8 @@
     "sync_running_in_session": "运行中",
     "sync_drive_locked_other_tab_hint": "该同步盘已在其它标签页中运行，请先关闭后再操作",
     "sync_enter_session": "进入",
+    "sync_peer_bind_warning_title": "绑定文件夹须知",
+    "sync_peer_bind_warning_body": "绑定文件夹后，将以主机数据为准完成初始化：\n\n1. 从主机下载文件到本文件夹（已有相同文件会跳过传输）\n2. 冲突文件以主机版本为准\n3. 初始化期间不会将本地文件同步到主机\n\n初始化完成后，若您拥有读写权限，本地新增文件才会同步到主机。\n\n确定要绑定文件夹吗？",
     "sync_change_folder": "更换",
     "sync_device_name_empty": "设备名称不能为空",
     "sync_device_name_set": "设备名称已设置为：{name}",

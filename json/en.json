@@ -1378,6 +1378,8 @@
     "sync_running_in_session": "Running",
     "sync_drive_locked_other_tab_hint": "This sync drive is running in another tab. Please close it first.",
     "sync_enter_session": "Enter",
+    "sync_peer_bind_warning_title": "Folder Binding Notice",
+    "sync_peer_bind_warning_body": "After binding, the folder will be initialized using the Host's data:\n\n1. Files are downloaded from the Host to this folder (identical files are skipped)\n2. Conflicts are resolved in favor of the Host version\n3. During initialization, local files are NOT synced to the Host\n\nAfter initialization completes, new local files will sync to the Host only if you have read-write permission.\n\nDo you want to bind this folder?",
     "sync_change_folder": "Change",
     "sync_device_name_empty": "Device name cannot be empty",
     "sync_device_name_set": "Device name set to: {name}",

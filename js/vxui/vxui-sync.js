@@ -2270,6 +2270,31 @@ var VX_SYNC = VX_SYNC || {
             for (var p in peerMap) peerCurrentPaths[p] = true;
             this._peerLastPaths = peerCurrentPaths;
 
+            // ===== 初始化规则（folderChanged）=====
+            // Peer 刚绑定/更换文件夹时，以主机数据为准完成初始化：
+            // - download（主机→Peer）：保留
+            // - deleteOnPeer（主机删除的文件）：保留（Peer 同步删除以匹配主机）
+            // - upload（Peer→主机）：抑制（初始化期间不推送本地文件到主机）
+            // - deleteOnHost（Peer 删除的文件）：抑制（不因 Peer 状态删除主机文件）
+            // - conflict：转为 download（主机版本优先）
+            // 初始化完成后的下一次 peer_file_report（folderChanged=false）恢复正常双向同步
+            if (folderChanged) {
+                console.log('[SYNC] Init sync (folder_changed): suppressing upload/conflict/deleteOnHost — Host→Peer only');
+                // 冲突文件以主机版本为准 → 转为 download
+                for (var ci = 0; ci < conflict.length; ci++) {
+                    download.push({
+                        sha1: conflict[ci].sha1,
+                        name: conflict[ci].name,
+                        size: conflict[ci].host_size,
+                        mtime: conflict[ci].host_mtime,
+                        parent_path: conflict[ci].parent_path
+                    });
+                }
+                conflict = [];
+                upload = [];
+                deleteOnHost = [];
+            }
+
             // Track Host-initiated deletions as pending — prevents race condition
             // where Peer reports the file still exists before completing the delete.
             if (!this._hostPendingOps) this._hostPendingOps = {};
@@ -2300,7 +2325,7 @@ var VX_SYNC = VX_SYNC || {
             }
 
             var totalWork = download.length + upload.length + conflict.length + deleteOnPeer.length + deleteOnHost.length;
-            console.log('[SYNC] Dropbox delta: dl=' + download.length + ' ul=' + upload.length + ' conflict=' + conflict.length + ' delPeer=' + deleteOnPeer.length + ' delHost=' + deleteOnHost.length + ' inSync=' + inSync);
+            console.log('[SYNC] Dropbox delta: dl=' + download.length + ' ul=' + upload.length + ' conflict=' + conflict.length + ' delPeer=' + deleteOnPeer.length + ' delHost=' + deleteOnHost.length + ' inSync=' + inSync + (folderChanged ? ' [INIT]' : ''));
 
             // Only send delta if there's actual work to do
             if (totalWork === 0) {
@@ -6887,8 +6912,23 @@ var VX_SYNC = VX_SYNC || {
     },
 
     // ========== Folder Binding ==========
+
+    // Peer 绑定/更换文件夹前提醒用户初始化规则（主机数据覆盖本地）
+    // 返回 true=确认继续，false=取消
+    _confirmPeerFolderBind() {
+        return confirm(this._t('sync_peer_bind_warning_body'));
+    },
+
     async selectFolder() {
         this.trackUI('sync_select_folder');
+
+        // Peer / 共享同步盘：绑定前提醒用户初始化规则（主机数据覆盖本地）
+        // _skipPeerBindConfirm 由 changeBoundFolder 设置，避免二次确认
+        if (!this.isHost && !this._skipPeerBindConfirm && !this._confirmPeerFolderBind()) {
+            console.log('[SYNC] Peer folder bind cancelled by user (warning dialog)');
+            return;
+        }
+
         console.log('[SYNC] Opening folder picker...');
         try {
             var dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
@@ -7006,9 +7046,21 @@ var VX_SYNC = VX_SYNC || {
     async changeBoundFolder() {
         this.trackUI('sync_change_folder');
 
+        // Peer / 共享同步盘：更换文件夹前提醒用户初始化规则
+        if (!this.isHost && !this._confirmPeerFolderBind()) {
+            console.log('[SYNC] Peer folder change cancelled by user (warning dialog)');
+            return;
+        }
+
         // If no folder currently bound, just use selectFolder directly
+        // （已在上方确认过，跳过 selectFolder 内部的二次确认）
         if (!this._boundFolder || !this._boundFolder.handle) {
-            await this.selectFolder();
+            this._skipPeerBindConfirm = true;
+            try {
+                await this.selectFolder();
+            } finally {
+                this._skipPeerBindConfirm = false;
+            }
             return;
         }
 
